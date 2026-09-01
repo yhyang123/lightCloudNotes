@@ -163,6 +163,23 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
 .tree-row[data-lock="unlocked"].drop-after,
 .tree-note-row[data-lock="unlocked"].drop-after { box-shadow: inset 0 -2px 0 var(--primary), inset 2px 0 0 var(--primary); }
 
+/* 「放进这个文件夹」——用整行环形描边 + 底色，和上面的单边细线形成明确区分：
+   一条线表示「插在这个位置」，一个框表示「进到这个东西里面」。
+   这里不需要写 locked/unlocked 变体：加锁未解锁的行不接收 into（JS 已排除），
+   而已解锁行的左色条本身就是 --primary，被同色环覆盖看不出差别。 */
+.tree-row.drop-into {
+  box-shadow: inset 0 0 0 2px var(--primary);
+  background: rgba(49, 109, 202, .10);
+}
+
+/* 拖到树的空白处 = 移回顶层。空白区没有具体的行可描边，
+   就给整个树容器一圈虚线，提示「松手会落在这一层」而不是落在某一行里。 */
+#folderTree.drop-root {
+  box-shadow: inset 0 0 0 2px var(--primary);
+  border-radius: 6px;
+  background: rgba(49, 109, 202, .06);
+}
+
 /* 笔记列表已并入左侧文件夹树（见文末「树内笔记行」），不再单独占一栏 */
 .empty-hint { padding: 40px 20px; text-align: center; color: var(--text2); }
 

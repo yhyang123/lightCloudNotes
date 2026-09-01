@@ -244,15 +244,119 @@ sortSelect.addEventListener('change', () => {
   renderTree();
 });
 
-/* ---- 手动拖拽重排 ----
-   同类且同父级才允许互换位置：文件夹只能和兄弟文件夹换，笔记只能和同目录笔记换。
-   跨父级移动语义上是「移动到…」，交给右键菜单处理，避免拖拽同时承担两种意图。 */
+/* ---- 手动拖拽：同级重排 + 跨级移动 ----
+   一行上存在两种落点意图，靠鼠标落在行内的纵向位置区分：
+   - 贴近上/下边缘（各 30%）→ 插到该行前/后，属于「排序」，仅同类同父有效
+   - 落在中间（40%）        → 放进这个文件夹里，属于「移动」，可跨父级、跨类型
+   另外把文件夹拖到树的空白处 = 移回顶层，拖到「未分组」行 = 笔记移出分类。 */
 let dragCtx = null;
 
 /* 把整个同级的最终顺序提交给服务端。
    提交完整列表而非单个位移，服务端按下标重写 order —— 重放多少次结果都一样。 */
 async function commitOrder(kind, parentId, ids) {
   await api('/api/reorder', { method: 'POST', body: { kind, parentId, ids } });
+}
+
+/* 三种落点标记散布在不同元素上，拖拽结束时统一扫干净，
+   否则残留的描边会让用户以为还处在可放状态 */
+function clearDropMarks() {
+  document.querySelectorAll('.drop-before,.drop-after,.drop-into')
+    .forEach((el) => el.classList.remove('drop-before', 'drop-after', 'drop-into'));
+  const tree = $('#folderTree');
+  if (tree) tree.classList.remove('drop-root');
+}
+
+/* 目标容器能否接收当前被拖的东西。
+   folderId 为 null 时：文件夹视作「顶层」，笔记视作「未分组」。 */
+function canDropInto(folderId) {
+  if (!dragCtx) return false;
+  /* 已经在这个容器里了，再放一次没有意义，也不该给出可放的提示 */
+  if (dragCtx.parentId === folderId) return false;
+  if (dragCtx.kind === 'folder') {
+    /* 被拖的加密文件夹自身没解锁也不行：服务端改 parentId 时会校验源文件夹，
+       同样是必然 403。排序不受此限（换位置不算动内容），所以只拦在这里。 */
+    if (dragCtx.locked) return false;
+    /* 不能把文件夹放进自己或自己的子孙里 —— 那会把整棵子树从树上摘掉 */
+    if (folderId !== null && dragCtx.subtree.has(folderId)) return false;
+  }
+  return true;
+}
+
+/* 判定本次 dragover/drop 的意图：'before' | 'after' | 'into' | null（不可放） */
+function dropIntent(e, row, kind, id, parentId) {
+  if (!dragCtx || dragCtx.id === id) return null;
+  const canSort = dragCtx.kind === kind && dragCtx.parentId === parentId;
+  /* 只有文件夹能当容器；未解锁的加密文件夹直接不收 ——
+     服务端必然以 403 拒绝，提前排除比让用户拖完再报错更好 */
+  const canInto = kind === 'folder' && row.dataset.lock !== 'locked' && canDropInto(id);
+  if (!canSort && !canInto) return null;
+
+  const r = row.getBoundingClientRect();
+  const ratio = (e.clientY - r.top) / (r.height || 1);
+  if (canSort && canInto) {
+    if (ratio < 0.3) return 'before';
+    if (ratio > 0.7) return 'after';
+    return 'into';
+  }
+  /* 只剩一种意图时就别再按位置挑剔了，整行都算有效落点 */
+  if (canInto) return 'into';
+  return ratio > 0.5 ? 'after' : 'before';
+}
+
+/* 跨父级移动：把 ctx 指向的文件夹/笔记放进 targetId。
+   与右键「移动到…」共用同一套服务端接口和同一套本地状态清理，避免两条路行为不一致。 */
+async function moveIntoFolder(ctx, targetId) {
+  try {
+    if (ctx.kind === 'folder') {
+      await api(`/api/folders/${ctx.id}`, { method: 'PATCH', body: { parentId: targetId } });
+      /* 换了父级就换了锁链（祖先集合变了），旧的本地解锁状态语义已失效，
+         连同子树一起撤销，让用户在新位置按新锁链重新解锁 */
+      purgeFolderSubtree(ctx.id);
+      if (targetId) state.expanded.add(targetId);
+      await loadTree();
+    } else {
+      /* 正在编辑的笔记先落盘，否则移动后重新加载会丢掉未保存的改动 */
+      if (state.currentNoteId === ctx.id) await saveNow();
+      await api(`/api/notes/${ctx.id}`, { method: 'PATCH', body: { folderId: targetId } });
+      /* 归属变了必须同步登记表，否则上锁新文件夹时会漏撤该笔记的令牌 */
+      rememberOwner(ctx.id, targetId);
+      delete noteCache[ctx.parentId || '__root__'];
+      delete noteCache[targetId || '__root__'];
+      state.expanded.add(targetId || '__root__');
+      await loadFolderNotes(ctx.parentId);
+      if (targetId !== ctx.parentId) await loadFolderNotes(targetId);
+    }
+    toast('已移动', 'success');
+  } catch (err) {
+    toast(err.message || '移动失败', 'error');
+  }
+}
+
+/* 只收不发的落点：「未分组」标题行、树的空白区域。
+   它们不是可拖动的行，也不参与排序，只承接「移出到这里」这一种意图。 */
+function makeDropZone(el, folderId, acceptKind, markClass, guard) {
+  const ok = (e) => dragCtx && dragCtx.kind === acceptKind
+    && canDropInto(folderId) && (!guard || guard(e));
+
+  el.addEventListener('dragover', (e) => {
+    if (!ok(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    el.classList.add(markClass);
+  });
+
+  el.addEventListener('dragleave', () => el.classList.remove(markClass));
+
+  el.addEventListener('drop', async (e) => {
+    if (!ok(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    clearDropMarks();
+    const ctx = dragCtx;
+    dragCtx = null;
+    await moveIntoFolder(ctx, folderId);
+  });
 }
 
 /* 让一行可拖拽。kind 区分文件夹/笔记，parentId 是它所在的同级容器，
@@ -262,7 +366,13 @@ function makeDraggable(row, kind, id, parentId, siblings) {
 
   row.addEventListener('dragstart', (e) => {
     e.stopPropagation();
-    dragCtx = { kind, id, parentId, siblings };
+    /* subtree 在拖起来的这一刻算好并缓存：dragover 每移动几像素就触发一次，
+       每次重算整棵子树太浪费；而拖拽期间树结构不会变，缓存是安全的 */
+    dragCtx = {
+      kind, id, parentId, siblings,
+      subtree: kind === 'folder' ? folderSubtreeIds(id) : null,
+      locked: row.dataset.lock === 'locked',
+    };
     row.classList.add('dragging');
     e.dataTransfer.effectAllowed = 'move';
     /* Firefox 不设 data 就不触发 drag 事件，内容本身用不上 */
@@ -272,45 +382,51 @@ function makeDraggable(row, kind, id, parentId, siblings) {
   row.addEventListener('dragend', (e) => {
     e.stopPropagation();
     row.classList.remove('dragging');
-    document.querySelectorAll('.drop-before,.drop-after')
-      .forEach((el) => el.classList.remove('drop-before', 'drop-after'));
+    clearDropMarks();
     dragCtx = null;
   });
 
-  /* 同类同父才是合法落点；用鼠标在行内的上下半区决定插到前面还是后面 */
-  const accepts = () => dragCtx && dragCtx.kind === kind
-    && dragCtx.parentId === parentId && dragCtx.id !== id;
-
   row.addEventListener('dragover', (e) => {
-    if (!accepts()) return;
+    const intent = dropIntent(e, row, kind, id, parentId);
+    if (!intent) return;
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
-    const r = row.getBoundingClientRect();
-    const after = e.clientY > r.top + r.height / 2;
-    row.classList.toggle('drop-before', !after);
-    row.classList.toggle('drop-after', after);
+    /* 本行接管后要顺手熄掉容器的「移回顶层」提示：这里 stopPropagation 之后
+       容器的 dragover 收不到事件，它自己没有机会把标记清掉，会两个提示同时亮 */
+    const tree = $('#folderTree');
+    if (tree) tree.classList.remove('drop-root');
+    row.classList.toggle('drop-before', intent === 'before');
+    row.classList.toggle('drop-after', intent === 'after');
+    row.classList.toggle('drop-into', intent === 'into');
   });
 
   row.addEventListener('dragleave', () => {
-    row.classList.remove('drop-before', 'drop-after');
+    row.classList.remove('drop-before', 'drop-after', 'drop-into');
   });
 
   row.addEventListener('drop', async (e) => {
-    if (!accepts()) return;
+    /* 不读 class 而是按当前鼠标位置重算：dragleave 可能已经把标记清掉了，
+       依赖 class 会在某些浏览器上把 drop 判成无效 */
+    const intent = dropIntent(e, row, kind, id, parentId);
+    if (!intent) return;
     e.preventDefault();
     e.stopPropagation();
-    const after = row.classList.contains('drop-after');
-    row.classList.remove('drop-before', 'drop-after');
+    clearDropMarks();
 
     const ctx = dragCtx;
     dragCtx = null;
+
+    if (intent === 'into') {
+      await moveIntoFolder(ctx, id);
+      return;
+    }
 
     /* 基于用户眼前的顺序算新序列：先摘掉被拖的那一项，再插到目标位置 */
     const ids = ctx.siblings.map((it) => it.id).filter((x) => x !== ctx.id);
     const at = ids.indexOf(id);
     if (at < 0) return;
-    ids.splice(after ? at + 1 : at, 0, ctx.id);
+    ids.splice(intent === 'after' ? at + 1 : at, 0, ctx.id);
 
     try {
       await commitOrder(ctx.kind, ctx.parentId, ids);
@@ -482,6 +598,9 @@ function renderTree() {
     state.activeFolder = null;
     createNote(null);
   });
+  /* 「未分组」只收笔记：文件夹的「没有分类」等价于「回到顶层」，
+     那是树空白区的语义，两者不该混在同一行上 */
+  makeDropZone(allRow.querySelector('.tree-row'), null, 'note', 'drop-into');
   container.appendChild(allRow);
   if (allExpanded) renderNotesBlock(container, null);
 }
@@ -2318,6 +2437,13 @@ $('#btnSearch').addEventListener('click', async () => {
 
 /* ================= 初始化 ================= */
 (async function init() {
+  /* 树容器是「移回顶层」的落点。挂在这里而不是 renderTree 里 ——
+     容器元素本身从不重建，放进 renderTree 会每次渲染叠加一份监听。
+     guard 排除鼠标正落在某一行上的情况：那时该由行自己决定意图，
+     否则冒泡上来会把「放进某个文件夹」误判成「移回顶层」。 */
+  makeDropZone($('#folderTree'), null, 'folder', 'drop-root',
+    (e) => !e.target.closest('.tree-row'));
+
   try {
     await loadTree();
     state.expanded.add('__root__');
