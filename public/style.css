@@ -188,6 +188,41 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
 .sb-color:hover { background: rgba(255,255,255,.14); }
 .sb-color input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
 
+/* ---------- 通用浮动工具条（链接 / 表格 / 代码块） ---------- */
+.float-bar {
+  position: absolute; z-index: 160; background: #2b3138; border-radius: 8px;
+  padding: 5px 8px; display: flex; align-items: center; gap: 3px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.25); animation: fadeIn .12s; max-width: 420px;
+}
+.float-bar .sb-btn { white-space: nowrap; }
+.float-bar .sb-btn.danger { color: #ff9c92; }
+.float-bar .sb-btn.danger:hover { background: rgba(217,72,59,.28); }
+.fb-text {
+  color: #a9b4c0; font-size: 12px; max-width: 190px; padding: 0 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ---------- 表格网格选择器 ---------- */
+.grid-picker { user-select: none; }
+.grid-rows { display: flex; flex-direction: column; gap: 3px; }
+.grid-row { display: flex; gap: 3px; }
+.grid-cell {
+  width: 18px; height: 18px; border: 1px solid var(--border); border-radius: 3px;
+  background: var(--panel); cursor: pointer; transition: background .06s, border-color .06s;
+}
+.grid-cell.on { background: var(--sel); border-color: var(--primary); }
+.grid-label { font-size: 13px; color: var(--text2); margin-top: 10px; }
+.grid-label b { color: var(--primary); }
+
+/* ---------- 代码语言快捷选择 ---------- */
+.lang-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.lang-chip {
+  border: 1px solid var(--border); background: var(--panel); color: var(--text2);
+  border-radius: 12px; padding: 3px 11px; font-size: 12px; cursor: pointer;
+}
+.lang-chip:hover { border-color: var(--primary); color: var(--primary); background: var(--sel); }
+.lang-chip.on { border-color: var(--primary); color: var(--primary); background: var(--sel); font-weight: 600; }
+
 .editor-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; min-width: 0; }
 .editor-content {
   width: 100%; max-width: 100%; margin: 0; padding: 24px 32px 120px; outline: none;
@@ -199,19 +234,29 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
   padding: 8px 14px; margin: 10px 0; border-radius: 0 6px 6px 0; color: #444;
 }
 .editor-content pre {
+  position: relative;
   background: #0d1b2a; color: #d6e2f0; padding: 14px 16px; border-radius: 8px;
   overflow-x: auto; margin: 10px 0; font-size: 13px; line-height: 1.6;
   font-family: "SF Mono", Menlo, Consolas, "Courier New", monospace; white-space: pre;
 }
+/* 语言标签用 CSS 渲染，不写入 DOM，避免污染保存内容 */
+.editor-content pre[data-lang]:not([data-lang=""])::before {
+  content: attr(data-lang);
+  display: block; color: #7fb3ff; font-size: 11px; margin-bottom: 8px; opacity: .8;
+  font-family: -apple-system, sans-serif; user-select: none; letter-spacing: .3px;
+}
+/* 兼容历史数据中已写入 DOM 的语言标签 */
 .editor-content pre .code-lang {
   display: block; color: #7fb3ff; font-size: 11px; margin-bottom: 8px; opacity: .8;
   font-family: -apple-system, sans-serif; user-select: none;
 }
+.editor-content pre[data-lang]:not([data-lang=""]):has(.code-lang)::before { content: none; }
 .editor-content table { border-collapse: collapse; margin: 10px 0; min-width: 300px; max-width: 100%; }
 .editor-content th, .editor-content td {
   border: 1px solid var(--border); padding: 7px 12px; min-width: 60px;
 }
 .editor-content th { background: var(--sel); font-weight: 600; }
+.editor-content td.cell-active, .editor-content th.cell-active { box-shadow: inset 0 0 0 2px var(--primary); }
 .editor-content hr { border: none; border-top: 1px solid var(--border); margin: 18px 0; }
 .editor-content a { color: var(--primary); }
 .editor-content ul, .editor-content ol { padding-left: 26px; }

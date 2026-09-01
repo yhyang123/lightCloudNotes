@@ -163,6 +163,39 @@
   </label>
 </div>
 
+<!-- 链接浮动气泡 -->
+<div id="linkBubble" class="float-bar hidden">
+  <span class="fb-text" id="lbUrl" title=""></span>
+  <span class="sb-sep"></span>
+  <button class="sb-btn" data-act="open" title="在新标签页打开">↗</button>
+  <button class="sb-btn" data-act="copy" title="复制链接地址">⧉</button>
+  <button class="sb-btn" data-act="edit" title="编辑链接">✏️</button>
+  <button class="sb-btn" data-act="unlink" title="移除链接（保留文字）">✕</button>
+</div>
+
+<!-- 表格浮动工具条 -->
+<div id="tableBar" class="float-bar hidden">
+  <button class="sb-btn" data-act="rowAbove" title="在上方插入一行">⬆行</button>
+  <button class="sb-btn" data-act="rowBelow" title="在下方插入一行">⬇行</button>
+  <button class="sb-btn" data-act="rowDel" title="删除当前行">✕行</button>
+  <span class="sb-sep"></span>
+  <button class="sb-btn" data-act="colLeft" title="在左侧插入一列">⬅列</button>
+  <button class="sb-btn" data-act="colRight" title="在右侧插入一列">➡列</button>
+  <button class="sb-btn" data-act="colDel" title="删除当前列">✕列</button>
+  <span class="sb-sep"></span>
+  <button class="sb-btn danger" data-act="tableDel" title="删除整个表格">🗑</button>
+</div>
+
+<!-- 代码块浮动工具条 -->
+<div id="codeBar" class="float-bar hidden">
+  <span class="fb-text" id="cbLang"></span>
+  <span class="sb-sep"></span>
+  <button class="sb-btn" data-act="lang" title="修改代码语言">语言</button>
+  <button class="sb-btn" data-act="copy" title="复制代码内容">复制</button>
+  <button class="sb-btn" data-act="exit" title="在代码块下方新建段落">退出 ↵</button>
+  <button class="sb-btn danger" data-act="del" title="删除整个代码块">🗑</button>
+</div>
+
 <script src="/app.js"></script>
 </body>
 </html>
