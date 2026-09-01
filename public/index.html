@@ -23,6 +23,11 @@
       <div class="sidebar-head">
         <span class="sidebar-title">文件夹</span>
         <div class="sidebar-head-actions">
+          <select id="sortMode" class="sort-select" title="排序方式" aria-label="排序方式">
+            <option value="time">按修改时间</option>
+            <option value="name">按名称</option>
+            <option value="custom">自定义顺序</option>
+          </select>
           <button id="btnNewNote" class="btn icon" title="新笔记">📝</button>
           <button id="btnNewRootFolder" class="btn icon" title="新建根文件夹">📁＋</button>
           <button id="btnCollapseSidebar" class="btn icon collapse-btn" title="收起侧栏">◀</button>
@@ -133,6 +138,7 @@
 <!-- 文件/文件夹右键菜单 -->
 <div id="contextMenu" class="context-menu hidden" role="menu" aria-label="快捷操作">
   <button type="button" id="contextRename" role="menuitem"><span>✏️</span><span>重命名</span></button>
+  <button type="button" id="contextPin" role="menuitem"><span>📌</span><span>置顶</span></button>
   <button type="button" id="contextPass" role="menuitem"><span>🔑</span><span>设置密码</span></button>
   <button type="button" id="contextMove" role="menuitem"><span>📁</span><span>移动到…</span></button>
 </div>

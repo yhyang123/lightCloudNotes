@@ -134,6 +134,35 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
 .tree-action:hover { background: #d8e2f0; color: var(--text); }
 .tree-children { margin-left: 14px; border-left: 1px dashed var(--border); padding-left: 4px; }
 
+/* ---------- 排序：下拉框 / 置顶标识 / 拖拽反馈 ---------- */
+.sort-select {
+  height: 24px; max-width: 104px; padding: 0 4px;
+  border: 1px solid var(--border); border-radius: 5px;
+  background: var(--panel); color: var(--text2); font-size: 12px; cursor: pointer;
+}
+.sort-select:hover { color: var(--text); border-color: var(--primary); }
+
+/* 置顶图钉：紧跟名称，不占 tree-actions 的位置（那片区域 hover 时会被按钮占满） */
+.pin-badge { font-size: 10px; flex-shrink: 0; opacity: .85; }
+
+/* 拖拽中的行淡出，让落点指示线成为视线焦点 */
+.tree-row[draggable="true"], .tree-note-row[draggable="true"] { cursor: grab; }
+.tree-row.dragging, .tree-note-row.dragging { opacity: .4; }
+
+/* 落点提示用行内阴影画线，不用 border —— border 会改变行高导致列表整体抖动。
+   加锁行本身用 inset 左色条，同属 box-shadow 会被整条覆盖，
+   所以这里把左色条一并写进来，保证拖拽时锁状态不会「闪没」。 */
+.tree-row.drop-before, .tree-note-row.drop-before { box-shadow: inset 0 2px 0 var(--primary); }
+.tree-row.drop-after, .tree-note-row.drop-after { box-shadow: inset 0 -2px 0 var(--primary); }
+.tree-row[data-lock="locked"].drop-before,
+.tree-note-row[data-lock="locked"].drop-before { box-shadow: inset 0 2px 0 var(--primary), inset 2px 0 0 #e0a33e; }
+.tree-row[data-lock="locked"].drop-after,
+.tree-note-row[data-lock="locked"].drop-after { box-shadow: inset 0 -2px 0 var(--primary), inset 2px 0 0 #e0a33e; }
+.tree-row[data-lock="unlocked"].drop-before,
+.tree-note-row[data-lock="unlocked"].drop-before { box-shadow: inset 0 2px 0 var(--primary), inset 2px 0 0 var(--primary); }
+.tree-row[data-lock="unlocked"].drop-after,
+.tree-note-row[data-lock="unlocked"].drop-after { box-shadow: inset 0 -2px 0 var(--primary), inset 2px 0 0 var(--primary); }
+
 /* 笔记列表已并入左侧文件夹树（见文末「树内笔记行」），不再单独占一栏 */
 .empty-hint { padding: 40px 20px; text-align: center; color: var(--text2); }
 

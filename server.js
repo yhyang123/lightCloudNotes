@@ -37,6 +37,7 @@ function loadAll() {
   }
   if (!Array.isArray(db.folders)) db.folders = [];
   if (!Array.isArray(db.notes)) db.notes = [];
+  migrateOrder();
   try {
     secret = fs.readFileSync(SECRET_FILE);
     if (secret.length < 16) throw new Error('bad secret');
@@ -55,6 +56,73 @@ function saveDb() {
 const newId = (p) => p + '_' + crypto.randomBytes(9).toString('hex');
 const getFolder = (id) => db.folders.find((f) => f.id === id) || null;
 const getNote = (id) => db.notes.find((n) => n.id === id) || null;
+
+/* ---------------- 排序字段 ----------------
+   order：手动拖拽产生的自定义序号，同级内从 0 递增。
+   pinned：仅文件夹有，置顶项恒排在同级最前，不受排序方式影响。
+
+   老库没有这两个字段，必须在载入时补齐，否则排序会拿到 undefined。
+   补齐时按各自的「自然顺序」赋值（文件夹按名称、笔记按修改时间倒序），
+   这样用户第一次切到自定义模式时看到的顺序与之前一致，不会突然乱掉。 */
+const ORDER_STEP = 100;
+
+function fillOrder(list, cmp) {
+  if (!list.some((it) => typeof it.order !== 'number')) return false;
+  list.slice().sort(cmp).forEach((it, i) => {
+    if (typeof it.order !== 'number') it.order = i * ORDER_STEP;
+  });
+  return true;
+}
+
+function migrateOrder() {
+  let changed = false;
+  const byName = (a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN');
+  const byTime = (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0);
+
+  /* 按父级分组补齐：order 只在同级之间有意义 */
+  const groupBy = (list, keyOf) => {
+    const g = new Map();
+    list.forEach((it) => {
+      const k = keyOf(it) || '__root__';
+      if (!g.has(k)) g.set(k, []);
+      g.get(k).push(it);
+    });
+    return g;
+  };
+
+  groupBy(db.folders, (f) => f.parentId).forEach((g) => {
+    if (fillOrder(g, byName)) changed = true;
+  });
+  groupBy(db.notes, (n) => n.folderId).forEach((g) => {
+    if (fillOrder(g, byTime)) changed = true;
+  });
+  db.folders.forEach((f) => {
+    if (typeof f.pinned !== 'boolean') { f.pinned = false; changed = true; }
+  });
+  if (changed) saveDb();
+}
+
+/* 同级下一个可用序号：新建项排到末尾 */
+function nextOrder(list) {
+  return list.reduce((mx, it) => Math.max(mx, typeof it.order === 'number' ? it.order : 0), -ORDER_STEP) + ORDER_STEP;
+}
+
+/* 同级最靠前的序号：新建笔记用。
+   笔记的自然顺序是「新的在最上」，若自定义模式下把新笔记塞到末尾，
+   用户新建后会在长列表底部找不到它，所以笔记与文件夹的插入端相反。 */
+function headOrder(list) {
+  return list.reduce((mn, it) => Math.min(mn, typeof it.order === 'number' ? it.order : 0), ORDER_STEP) - ORDER_STEP;
+}
+
+/* 服务端只保证一个稳定的规范顺序（置顶优先 + order 升序），
+   具体按名称还是按时间由前端依用户偏好重排 —— 排序方式是客户端偏好，
+   放在前端可避免三个接口都要传 sort 参数，也让排序逻辑只有一份实现。 */
+function canonical(a, b) {
+  const pa = a.pinned ? 1 : 0;
+  const pb = b.pinned ? 1 : 0;
+  if (pa !== pb) return pb - pa;
+  return (a.order || 0) - (b.order || 0);
+}
 
 /* 文件夹密码：scrypt 哈希 + 随机盐 */
 function hashPassword(pw, salt) {
@@ -111,7 +179,7 @@ function isDescendant(folderId, maybeAncestorId) {
 function treeNode(parentId, tokens) {
   return db.folders
     .filter((f) => f.parentId === parentId)
-    .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+    .sort(canonical)
     .map((f) => {
       const hasPw = !!f.passwordHash;
       const unlocked = hasPw && checkUnlock(f.id, tokens || []);
@@ -121,6 +189,9 @@ function treeNode(parentId, tokens) {
         locked: hasPw,
         unlocked,
         hint: hasPw ? (f.pwHint || '') : null,
+        order: f.order || 0,
+        pinned: !!f.pinned,
+        createdAt: f.createdAt || 0,
         children: (hasPw && !unlocked) ? null : treeNode(f.id, tokens),
       };
     });
@@ -259,6 +330,44 @@ async function handleApi(req, res, pathname) {
     return sendJSON(res, 200, { tree: treeNode(null, clientTokens(req)) });
   }
 
+  /* ---- 手动排序 ----
+     前端拖拽后把「该同级的完整 id 顺序」整批提交，服务端按下标重写 order。
+     整批覆盖而非提交单个位移，是因为只改一项的话并发/断线会留下空洞或重号，
+     而整批写入天然幂等：无论重放多少次结果都一样。 */
+  if (method === 'POST' && pathname === '/api/reorder') {
+    const body = await readJSON(req);
+    const kind = body.kind === 'folder' ? 'folder' : 'note';
+    const ids = Array.isArray(body.ids) ? body.ids : [];
+    if (!ids.length) return sendJSON(res, 400, { error: '缺少排序列表' });
+
+    const parentId = body.parentId || null;
+    if (parentId) {
+      if (!getFolder(parentId)) return sendJSON(res, 404, { error: '文件夹不存在' });
+      requireUnlock(req, parentId);
+    }
+
+    /* 只接受确实属于该父级的条目，避免越权改动别处的顺序 */
+    const pool = kind === 'folder'
+      ? db.folders.filter((f) => (f.parentId || null) === parentId)
+      : db.notes.filter((n) => (n.folderId || null) === parentId);
+    const byId = new Map(pool.map((it) => [it.id, it]));
+
+    let n = 0;
+    ids.forEach((id) => {
+      const it = byId.get(id);
+      if (it) it.order = (n++) * ORDER_STEP;
+    });
+    if (!n) return sendJSON(res, 400, { error: '排序列表与目标位置不匹配' });
+
+    /* 未出现在提交列表里的条目（例如另一端新建的）统一顺延到末尾，不留重号 */
+    pool.forEach((it) => {
+      if (!ids.includes(it.id)) it.order = (n++) * ORDER_STEP;
+    });
+
+    saveDb();
+    return sendJSON(res, 200, { ok: true });
+  }
+
   /* ---- 文件夹 ---- */
   let m;
   if (method === 'POST' && pathname === '/api/folders') {
@@ -274,6 +383,8 @@ async function handleApi(req, res, pathname) {
       parentId,
       passwordHash: null,
       salt: null,
+      pinned: false,
+      order: nextOrder(db.folders.filter((f) => f.parentId === parentId)),
       createdAt: Date.now(),
     };
     db.folders.push(folder);
@@ -287,12 +398,22 @@ async function handleApi(req, res, pathname) {
     if (!folder) return sendJSON(res, 404, { error: '文件夹不存在' });
 
     if (method === 'PATCH') {
-      requireUnlock(req, folder.id);
       const body = await readJSON(req);
+      /* 置顶只是「排在哪」的展示偏好，既不泄露也不改动锁内任何内容，
+         所以单改 pinned 时放行 —— 否则每次调整加密文件夹的位置都要先解锁一次，
+         而解锁本身反而让内容暴露的时间更长。
+         但只要同一请求还捎带了改名/移动这类真正动到文件夹的字段，仍需解锁。 */
+      const onlyPinned = 'pinned' in body
+        && !('name' in body) && !('parentId' in body);
+      if (!onlyPinned) requireUnlock(req, folder.id);
+
       if (typeof body.name === 'string') {
         const name = body.name.trim();
         if (!name) return sendJSON(res, 400, { error: '文件夹名称不能为空' });
         folder.name = name;
+      }
+      if ('pinned' in body) {
+        folder.pinned = !!body.pinned;
       }
       if ('parentId' in body) {
         const parentId = body.parentId || null;
@@ -304,7 +425,11 @@ async function handleApi(req, res, pathname) {
           }
           requireUnlock(req, parentId);
         }
-        folder.parentId = parentId;
+        if (parentId !== folder.parentId) {
+          /* 换了父级，旧 order 在新同级里毫无意义且可能与他人撞号，重排到末尾 */
+          folder.parentId = parentId;
+          folder.order = nextOrder(db.folders.filter((f) => f.parentId === parentId && f.id !== folder.id));
+        }
       }
       saveDb();
       return sendJSON(res, 200, { ok: true });
@@ -373,12 +498,12 @@ async function handleApi(req, res, pathname) {
     const tks = clientTokens(req);
     const folders = db.folders
       .filter((f) => f.parentId === folder.id)
-      .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+      .sort(canonical)
       /* 已解锁的加密子文件夹同样按「可展开」下发（children: []），与 treeNode 保持一致 */
       .map((f) => {
         const hasPw = !!f.passwordHash;
         const unlocked = hasPw && checkUnlock(f.id, tks);
-        return { id: f.id, name: f.name, locked: hasPw, unlocked, hint: hasPw ? (f.pwHint || '') : null, children: (hasPw && !unlocked) ? null : [] };
+        return { id: f.id, name: f.name, locked: hasPw, unlocked, hint: hasPw ? (f.pwHint || '') : null, order: f.order || 0, pinned: !!f.pinned, createdAt: f.createdAt || 0, children: (hasPw && !unlocked) ? null : [] };
       });
     return sendJSON(res, 200, { folders });
   }
@@ -405,13 +530,14 @@ async function handleApi(req, res, pathname) {
     const tks = clientTokens(req);
     const notes = db.notes
       .filter((n) => (n.folderId || null) === folderId)
-      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .sort(canonical)
       /* unlocked：加密笔记是否已具备完整访问条件（文件夹链 + 笔记令牌），供前端渲染锁定图标 */
       .map((n) => ({
         id: n.id,
         title: n.title,
         locked: !!n.passwordHash,
         unlocked: !!n.passwordHash && checkNoteUnlock(n, tks),
+        order: n.order || 0,
         createdAt: n.createdAt,
         updatedAt: n.updatedAt,
       }));
@@ -431,6 +557,7 @@ async function handleApi(req, res, pathname) {
       folderId,
       title: String(body.title || '无标题笔记').slice(0, 200),
       content: typeof body.content === 'string' ? body.content : '',
+      order: headOrder(db.notes.filter((n) => (n.folderId || null) === folderId)),
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -536,7 +663,11 @@ async function handleApi(req, res, pathname) {
           if (!getFolder(folderId)) return sendJSON(res, 404, { error: '目标文件夹不存在' });
           requireUnlock(req, folderId);
         }
-        note.folderId = folderId;
+        if (folderId !== (note.folderId || null)) {
+          /* 同文件夹移动：order 换目录后失去意义，重排到目标目录最前（与新建笔记一致） */
+          note.folderId = folderId;
+          note.order = headOrder(db.notes.filter((n) => (n.folderId || null) === folderId && n.id !== note.id));
+        }
       }
       note.updatedAt = Date.now();
       saveDb();

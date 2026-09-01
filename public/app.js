@@ -201,6 +201,135 @@ applyLayout();
 $('#btnCollapseSidebar').addEventListener('click', () => collapsePane('sidebar'));
 $('#btnExpandSidebar').addEventListener('click', () => expandPane('sidebar'));
 
+/* ================= 排序 =================
+   三种模式：time（修改时间倒序，默认）/ name（名称升序）/ custom（手动拖拽顺序）。
+   排序方式是「看」的偏好，全局共用一份存 localStorage；
+   拖出来的顺序是「数据」，由服务端按文件夹分别记在 order 字段里。 */
+const SORT_MODES = ['time', 'name', 'custom'];
+function getSortMode() {
+  const m = getLayout().sortMode;
+  return SORT_MODES.includes(m) ? m : 'time';
+}
+function setSortMode(mode) {
+  setLayout({ sortMode: SORT_MODES.includes(mode) ? mode : 'time' });
+}
+
+/* 置顶恒在最前，不受排序方式影响；多个置顶项之间再按当前模式排。
+   返回新数组，避免就地改动 treeData / noteCache 造成后续渲染顺序漂移。 */
+function sortItems(list, mode) {
+  /* 笔记有 updatedAt，文件夹只有 createdAt（重命名不算内容变更，服务端不打时间戳），
+     统一取「能拿到的最新时间戳」，让两类条目在同一套规则下可比 */
+  const ts = (it) => it.updatedAt || it.createdAt || 0;
+  const cmp = {
+    /* 时间倒序：新的在上。没有时间戳的当作最旧，沉到末尾 */
+    time: (a, b) => ts(b) - ts(a),
+    /* 中文按拼音排，数字按大小排（否则 "10" 会排在 "2" 前面） */
+    name: (a, b) => String(a.name || a.title || '').localeCompare(
+      String(b.name || b.title || ''), 'zh-CN', { numeric: true }),
+    custom: (a, b) => (a.order || 0) - (b.order || 0),
+  }[mode] || ((a, b) => ts(b) - ts(a));
+
+  return list.slice().sort((a, b) => {
+    const pa = a.pinned ? 1 : 0;
+    const pb = b.pinned ? 1 : 0;
+    if (pa !== pb) return pb - pa;
+    return cmp(a, b);
+  });
+}
+
+const sortSelect = $('#sortMode');
+sortSelect.value = getSortMode();
+sortSelect.addEventListener('change', () => {
+  setSortMode(sortSelect.value);
+  renderTree();
+});
+
+/* ---- 手动拖拽重排 ----
+   同类且同父级才允许互换位置：文件夹只能和兄弟文件夹换，笔记只能和同目录笔记换。
+   跨父级移动语义上是「移动到…」，交给右键菜单处理，避免拖拽同时承担两种意图。 */
+let dragCtx = null;
+
+/* 把整个同级的最终顺序提交给服务端。
+   提交完整列表而非单个位移，服务端按下标重写 order —— 重放多少次结果都一样。 */
+async function commitOrder(kind, parentId, ids) {
+  await api('/api/reorder', { method: 'POST', body: { kind, parentId, ids } });
+}
+
+/* 让一行可拖拽。kind 区分文件夹/笔记，parentId 是它所在的同级容器，
+   siblings 是当前「已排好序」的同级数组 —— 拖拽结果要基于用户眼前看到的顺序计算。 */
+function makeDraggable(row, kind, id, parentId, siblings) {
+  row.draggable = true;
+
+  row.addEventListener('dragstart', (e) => {
+    e.stopPropagation();
+    dragCtx = { kind, id, parentId, siblings };
+    row.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    /* Firefox 不设 data 就不触发 drag 事件，内容本身用不上 */
+    e.dataTransfer.setData('text/plain', id);
+  });
+
+  row.addEventListener('dragend', (e) => {
+    e.stopPropagation();
+    row.classList.remove('dragging');
+    document.querySelectorAll('.drop-before,.drop-after')
+      .forEach((el) => el.classList.remove('drop-before', 'drop-after'));
+    dragCtx = null;
+  });
+
+  /* 同类同父才是合法落点；用鼠标在行内的上下半区决定插到前面还是后面 */
+  const accepts = () => dragCtx && dragCtx.kind === kind
+    && dragCtx.parentId === parentId && dragCtx.id !== id;
+
+  row.addEventListener('dragover', (e) => {
+    if (!accepts()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    const r = row.getBoundingClientRect();
+    const after = e.clientY > r.top + r.height / 2;
+    row.classList.toggle('drop-before', !after);
+    row.classList.toggle('drop-after', after);
+  });
+
+  row.addEventListener('dragleave', () => {
+    row.classList.remove('drop-before', 'drop-after');
+  });
+
+  row.addEventListener('drop', async (e) => {
+    if (!accepts()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const after = row.classList.contains('drop-after');
+    row.classList.remove('drop-before', 'drop-after');
+
+    const ctx = dragCtx;
+    dragCtx = null;
+
+    /* 基于用户眼前的顺序算新序列：先摘掉被拖的那一项，再插到目标位置 */
+    const ids = ctx.siblings.map((it) => it.id).filter((x) => x !== ctx.id);
+    const at = ids.indexOf(id);
+    if (at < 0) return;
+    ids.splice(after ? at + 1 : at, 0, ctx.id);
+
+    try {
+      await commitOrder(ctx.kind, ctx.parentId, ids);
+      /* 拖过就意味着用户要的是自己的顺序，自动切到自定义模式，
+         否则提交成功了但界面仍按时间/名称排，看上去像「拖了没反应」 */
+      if (getSortMode() !== 'custom') {
+        setSortMode('custom');
+        sortSelect.value = 'custom';
+        toast('已切换为自定义顺序');
+      }
+      /* order 由服务端重算，重新拉数据而不是本地猜 */
+      if (ctx.kind === 'note') await loadFolderNotes(ctx.parentId);
+      else await loadTree();
+    } catch (err) {
+      toast(err.message || '排序失败');
+    }
+  });
+}
+
 /* ================= 文件夹树 ================= */
 let treeData = [];
 const noteCache = {}; // folderId → notes 数组（null 表示未加载）
@@ -230,33 +359,10 @@ function renderTree() {
   const container = $('#folderTree');
   container.innerHTML = '';
 
-  /* 「全部笔记」（根级） */
-  const allExpanded = state.expanded.has('__root__');
-  const allRow = document.createElement('div');
-  allRow.className = 'tree-node';
-  allRow.innerHTML = `<div class="tree-row ${state.activeFolder === null ? 'active' : ''}">
-    <span class="tree-caret ${allExpanded ? 'open' : ''}">▶</span>
-    <span class="tree-folder-icon">🗂️</span>
-    <span class="tree-name">全部笔记</span>
-    <span class="tree-actions">
-      <button class="tree-action" data-act="newnote" title="在根目录新建笔记">📝</button>
-    </span>
-  </div>`;
-  allRow.querySelector('.tree-row').addEventListener('click', (e) => {
-    if (e.target.closest('.tree-action')) return;
-    toggleExpand('__root__');
-    selectFolder(null, false);
-  });
-  allRow.querySelector('[data-act=newnote]').addEventListener('click', (e) => {
-    e.stopPropagation();
-    state.activeFolder = null;
-    createNote(null);
-  });
-  container.appendChild(allRow);
-  if (allExpanded) renderNotesBlock(container, null);
-
-  const build = (nodes, parentEl) => {
-    nodes.forEach((node) => {
+  const build = (nodes, parentEl, parentId) => {
+    /* 按当前偏好排一遍再渲染；sorted 同时作为拖拽计算的基准顺序 */
+    const sorted = sortItems(nodes, getSortMode());
+    sorted.forEach((node) => {
       const wrapper = document.createElement('div');
       wrapper.className = 'tree-node';
       const expanded = state.expanded.has(node.id);
@@ -296,6 +402,7 @@ function renderTree() {
         <span class="tree-caret ${expanded ? 'open' : ''}">▶</span>
         <span class="tree-folder-icon" data-lock="${lockState}" title="${iconTitle}">${folderIcon}${lockState === 'unlocked' ? '<span class="lock-badge" aria-label="已解锁">🔓</span>' : ''}</span>
         <span class="tree-name" title="${esc(node.name)}">${esc(node.name)}</span>
+        ${node.pinned ? '<span class="pin-badge" title="已置顶">📌</span>' : ''}
         ${lockBtn}
         <span class="tree-actions">
           <button class="tree-action" data-act="newnote" title="在此文件夹新建笔记">📝</button>
@@ -315,8 +422,9 @@ function renderTree() {
       });
       row.addEventListener('contextmenu', (e) => {
         e.preventDefault();
-        showContextMenu(e.clientX, e.clientY, { type: 'folder', id: node.id });
+        showContextMenu(e.clientX, e.clientY, { type: 'folder', id: node.id, node });
       });
+      makeDraggable(row, 'folder', node.id, parentId || null, sorted);
       const unlockBtn = row.querySelector('[data-act=unlock]');
       if (unlockBtn) unlockBtn.addEventListener('click', (e) => { e.stopPropagation(); promptUnlock(node); });
       const lockBtnEl = row.querySelector('[data-act=lock]');
@@ -331,7 +439,7 @@ function renderTree() {
       if (showChildren) {
         const childrenBox = document.createElement('div');
         childrenBox.className = 'tree-children';
-        build(node.children || [], childrenBox);
+        build(node.children || [], childrenBox, node.id);
         wrapper.appendChild(childrenBox);
       }
       /* 笔记列表 */
@@ -349,7 +457,33 @@ function renderTree() {
       parentEl.appendChild(wrapper);
     });
   };
-  build(treeData, container);
+  build(treeData, container, null);
+
+  /* 「未分组」放在所有顶层文件夹之后：它只是没归类笔记的兜底容器，
+     不该抢占列表首位，也不参与排序模式与拖拽 */
+  const allExpanded = state.expanded.has('__root__');
+  const allRow = document.createElement('div');
+  allRow.className = 'tree-node';
+  allRow.innerHTML = `<div class="tree-row ${state.activeFolder === null ? 'active' : ''}">
+    <span class="tree-caret ${allExpanded ? 'open' : ''}">▶</span>
+    <span class="tree-folder-icon">🗂️</span>
+    <span class="tree-name">未分组</span>
+    <span class="tree-actions">
+      <button class="tree-action" data-act="newnote" title="在未分组新建笔记">📝</button>
+    </span>
+  </div>`;
+  allRow.querySelector('.tree-row').addEventListener('click', (e) => {
+    if (e.target.closest('.tree-action')) return;
+    toggleExpand('__root__');
+    selectFolder(null, false);
+  });
+  allRow.querySelector('[data-act=newnote]').addEventListener('click', (e) => {
+    e.stopPropagation();
+    state.activeFolder = null;
+    createNote(null);
+  });
+  container.appendChild(allRow);
+  if (allExpanded) renderNotesBlock(container, null);
 }
 
 /* 渲染文件夹下的笔记列表块 */
@@ -367,7 +501,9 @@ function renderNotesBlock(parentEl, folderId) {
   } else if (!Array.isArray(notes)) {
     block.innerHTML = '<div class="tree-note-row" style="color:var(--danger);font-size:12px">加载失败</div>';
   } else {
-    notes.forEach((n) => {
+    /* 与文件夹同一套规则：先按当前偏好排，sorted 再作为拖拽的基准顺序 */
+    const sorted = sortItems(notes, getSortMode());
+    sorted.forEach((n) => {
       const row = document.createElement('div');
       row.className = 'tree-note-row' + (n.id === state.currentNoteId ? ' active' : '');
       /* 笔记图标三态：加密未解锁 🔐 / 加密已解锁 📄+🔓 / 普通 📄 */
@@ -397,6 +533,7 @@ function renderNotesBlock(parentEl, folderId) {
         e.preventDefault();
         showContextMenu(e.clientX, e.clientY, { type: 'note', id: n.id, note: n });
       });
+      makeDraggable(row, 'note', n.id, folderId || null, sorted);
       block.appendChild(row);
     });
     if (!notes.length) {
@@ -536,7 +673,7 @@ async function selectFolder(folderId, forceExpand = true) {
   /* 已解锁的文件夹在本会话内保持解锁，切换文件夹不再撤销令牌（只有手动「🔒 重新上锁」才失效） */
   state.activeFolder = folderId;
   const node = folderId ? findNode(folderId) : null;
-  $('#currentFolderName').textContent = node ? `📂 ${node.name}` : '🗂️ 全部笔记';
+  $('#currentFolderName').textContent = node ? `📂 ${node.name}` : '🗂️ 未分组';
 
   /* 加锁且未解锁：关闭编辑器，树内占位由 renderTree 处理 */
   if (node && node.locked && !node.unlocked) {
@@ -633,6 +770,7 @@ async function openNote(id) {
     savedRange = null;
     savedCaret = null;
     hideAllFloatBars();
+    blockTypeSel.value = 'p'; /* 选区已清空，段落类型下拉框不能留着上一篇的状态 */
     /* 以服务端返回的 folderId 为准刷新归属登记 */
     rememberOwner(id, note.folderId);
 
@@ -1024,9 +1162,46 @@ $('#toolbar').addEventListener('click', (e) => {
   execFormat(btn.dataset.cmd);
 });
 
-$('#blockType').addEventListener('change', (e) => {
-  execFormat('formatBlock', e.target.value);
-  e.target.value = 'p';
+/* ---------- 段落类型 ----------
+   这个下拉框是「状态」而不是「一次性动作」：它必须实时反映光标所在块的类型。
+   早先用完就把 value 重置成 'p'，于是在标题里再选「正文」时值根本没变化，
+   浏览器不触发 change 事件，formatBlock 永远不执行 —— 表现就是标题切不回正文。 */
+const blockTypeSel = $('#blockType');
+const BLOCK_TAGS = ['p', 'h1', 'h2', 'h3', 'blockquote', 'pre'];
+
+/* 从当前光标向上找最近的块级容器，同步到下拉框 */
+function syncBlockType() {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return;
+  let el = sel.getRangeAt(0).commonAncestorContainer;
+  if (el.nodeType === 3) el = el.parentNode;
+  if (!el || !editorEl.contains(el)) return;
+  let tag = '';
+  while (el && el !== editorEl) {
+    const t = el.tagName ? el.tagName.toLowerCase() : '';
+    if (BLOCK_TAGS.includes(t)) { tag = t; break; }
+    /* 列表项与表格单元格自成一体，不归属任何段落类型，就近截断 */
+    if (t === 'li' || t === 'td' || t === 'th') break;
+    el = el.parentNode;
+  }
+  blockTypeSel.value = tag || 'p'; /* 没有块级包裹的裸文本按正文处理 */
+}
+
+/* 块级格式与行内格式的差别：对折叠光标同样有效，不需要选中文字。
+   所以恢复选区要用 savedCaret（始终记录最新落点），
+   而不是 restoreRange 依赖的 savedRange（只记非折叠选区，可能是别处的旧选区）。
+   另外 formatBlock 的值在部分内核必须带尖括号才被识别。 */
+function execBlockFormat(tag) {
+  if (!ensureEditableForFormat()) return;
+  restoreCaret();
+  document.execCommand('formatBlock', false, '<' + tag + '>');
+  saveRange();
+  markDirty();
+  syncBlockType(); /* 命令未生效时把下拉框拨回真实状态 */
+}
+
+blockTypeSel.addEventListener('change', (e) => {
+  execBlockFormat(e.target.value);
 });
 
 $('#btnUndo').addEventListener('click', () => { execFormat('undo'); });
@@ -1065,6 +1240,7 @@ document.addEventListener('selectionchange', () => {
   clearTimeout(bubbleTimer);
   saveRange(); /* 随选区变化持续记录，供工具栏 / 气泡命令恢复使用 */
   syncContextBars(); /* 同步代码块 / 表格上下文工具条 */
+  syncBlockType(); /* 让段落类型下拉框始终反映光标所在块 */
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || !sel.rangeCount) { hideBubble(); return; }
   const range = sel.getRangeAt(0);
@@ -1816,6 +1992,18 @@ function showContextMenu(x, y, target) {
   $('#contextPass').querySelector('span:last-child').textContent = target.type === 'folder'
     ? ((findNode(target.id) || {}).locked ? '修改/移除密码' : '设置密码')
     : '设置/修改密码';
+
+  /* 置顶目前只对文件夹开放，笔记右键时整项隐藏而不是置灰 —— 菜单很短，
+     摆一个永远点不动的条目只会让人以为出了问题 */
+  const pinBtn = $('#contextPin');
+  if (target.type === 'folder') {
+    const node = target.node || findNode(target.id) || {};
+    pinBtn.classList.remove('hidden');
+    pinBtn.querySelector('span:last-child').textContent = node.pinned ? '取消置顶' : '置顶';
+  } else {
+    pinBtn.classList.add('hidden');
+  }
+
   menu.classList.remove('hidden');
   const maxX = window.innerWidth - menu.offsetWidth - 8;
   const maxY = window.innerHeight - menu.offsetHeight - 8;
@@ -1834,6 +2022,20 @@ $('#contextRename').addEventListener('click', () => {
     if (node) promptRenameFolder(node);
   } else if (target.type === 'note' && target.note) {
     promptRenameNote(target.note);
+  }
+});
+$('#contextPin').addEventListener('click', async () => {
+  const target = contextMenu._target;
+  hideContextMenu();
+  if (!target || target.type !== 'folder') return;
+  const node = target.node || findNode(target.id);
+  if (!node) return;
+  try {
+    await api(`/api/folders/${node.id}`, { method: 'PATCH', body: { pinned: !node.pinned } });
+    await loadTree();
+    toast(node.pinned ? '已取消置顶' : '已置顶');
+  } catch (e) {
+    toast(e.message || '操作失败');
   }
 });
 $('#contextPass').addEventListener('click', async () => {
@@ -1866,7 +2068,8 @@ window.addEventListener('resize', hideContextMenu);
 
 async function promptMoveFolder(node) {
   // 构建可选目标列表：根 + 所有文件夹（排除自身与子孙）
-  const targets = [{ id: null, name: '根目录', depth: 0 }];
+  /* 文件夹移到 parentId=null 是「顶层」，与笔记的「未分组」是两个概念，措辞不能混用 */
+  const targets = [{ id: null, name: '顶层', depth: 0 }];
   const walk = (nodes, depth, skipId) => {
     nodes.forEach((n) => {
       if (n.id === skipId) return;
@@ -1880,9 +2083,14 @@ async function promptMoveFolder(node) {
     `<div class="move-target" data-idx="${i}" style="padding-left:${12 + t.depth * 18}px">${t.id === null ? '🗂️' : '📁'} ${esc(t.name)}</div>`
   ).join('');
 
-  $('#modalTitle').textContent = `移动文件夹「${node.name}」到…`;
-  $('#modalBody').innerHTML = listHTML + '<div class="modal-hint">注意：不能移动到自身或其子文件夹内。</div>';
-  $('#modalOk').textContent = '移动';
+  /* 走 openModal 而不是手动铺 title/body —— 弹窗的显示动作（去掉 mask 的 hidden）
+     只在 openModal 里做，自己拼装很容易漏掉那一步，表现就是「点了没反应」 */
+  openModal(
+    `移动文件夹「${node.name}」到…`,
+    listHTML + '<div class="modal-hint">注意：不能移动到自身或其子文件夹内。</div>',
+    null,
+    '移动'
+  );
   let chosen = 0;
   const items = Array.from($('#modalBody').querySelectorAll('.move-target'));
   const highlight = () => items.forEach((el, i) => el.classList.toggle('active', i === chosen));
@@ -2019,7 +2227,7 @@ async function promptNotePassword(noteId) {
 function openMoveNote(noteId) {
   if (!noteId) return;
   const sourceFolderId = noteFolderOf(noteId);
-  const targets = [{ id: null, name: '根目录（未分组）', depth: 0 }];
+  const targets = [{ id: null, name: '未分组', depth: 0 }];
   const walk = (nodes, depth) => {
     nodes.forEach((n) => {
       targets.push({ id: n.id, name: n.name, depth: depth + 1 });
@@ -2067,8 +2275,8 @@ $('#btnSearch').addEventListener('click', async () => {
   const k = kw.trim().toLowerCase();
   if (!k) return;
 
-  /* 收集可搜索范围：根目录 + 所有未加锁（或已解锁）的文件夹 */
-  const scopes = [{ id: null, name: '根目录' }];
+  /* 收集可搜索范围：未分组 + 所有未加锁（或已解锁）的文件夹 */
+  const scopes = [{ id: null, name: '未分组' }];
   const walk = (nodes) => {
     (nodes || []).forEach((n) => {
       if (!n.locked || n.unlocked) {

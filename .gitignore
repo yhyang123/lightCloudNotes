@@ -5,6 +5,9 @@ data/
 node_modules/
 *.log
 
+# 镜像导出产物（体积大，不入库）
+dist/
+
 # 编辑器 / IDE
 .idea/
 .vscode/
