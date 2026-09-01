@@ -1,0 +1,14 @@
+services:
+  nascloudnote:
+    build: .
+    # 或者直接用已构建的镜像名
+    image: nascloudnote:latest
+    container_name: nascloudnote
+    restart: unless-stopped
+    ports:
+      - "3000:3000"          # 左边改成 NAS 上空闲的端口
+    volumes:
+      - ./data:/app/data     # 笔记数据库 + 上传图片的持久化目录，建议指向 NAS 共享文件夹
+    environment:
+      - PORT=3000
+      - DATA_DIR=/app/data

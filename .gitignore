@@ -1,0 +1,19 @@
+# 运行时数据（含私密笔记、密码哈希、签名密钥、上传图片）—— 绝不入库
+data/
+
+# 依赖与构建产物
+node_modules/
+*.log
+
+# 编辑器 / IDE
+.idea/
+.vscode/
+.workbuddy/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 环境变量
+.env
+.env.local
