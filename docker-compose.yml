@@ -1,8 +1,8 @@
 services:
   nascloudnote:
     build: .
-    # 或者直接用已构建的镜像名
-    image: nascloudnote:latest
+    # 明确锁定版本号，避免 latest 被后续版本覆盖时行为漂移
+    image: nascloudnote:1.4.0
     container_name: nascloudnote
     restart: unless-stopped
     ports:

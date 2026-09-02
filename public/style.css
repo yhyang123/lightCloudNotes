@@ -23,7 +23,10 @@ body {
 .hidden { display: none !important; }
 
 /* ---------- 布局 ---------- */
-#app { display: flex; flex-direction: column; height: 100vh; }
+/* 移动浏览器地址栏伸缩会让 100vh 溢出，dvh 可用时优先。
+   折叠屏内屏、平板横屏同样跑在移动浏览器上却不命中窄屏断点，
+   所以兜底放在全局而非 @media 里。 */
+#app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 .main { flex: 1; display: flex; min-height: 0; position: relative; }
 
 /* 列宽拖拽分隔条 */
@@ -58,9 +61,10 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
   display: flex; flex-direction: column; flex-shrink: 0;
 }
 .sidebar-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 12px 6px; white-space: nowrap;
+  display: flex; align-items: center;
+  padding: 10px 12px 6px;
 }
+.sidebar-head-actions { flex-wrap: nowrap; }
 .sidebar-title { font-size: 12px; color: var(--text2); font-weight: 600; letter-spacing: .05em; }
 .tree { flex: 1; overflow-y: auto; padding: 4px 6px 20px; }
 
@@ -274,7 +278,11 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
   width: 100%; max-width: 100%; margin: 0; padding: 24px 32px 120px; outline: none;
   min-height: 100%; line-height: 1.75; font-size: 15px; word-break: break-word; overflow-wrap: anywhere;
 }
-.editor-content img { max-width: 100%; border-radius: 6px; margin: 6px 0; }
+.editor-content img { max-width: 100%; border-radius: 6px; margin: 6px 0; cursor: pointer; }
+/* 只读态点击图片是放大预览，用放大镜光标提示 */
+.editor-content.readonly img { cursor: zoom-in; }
+/* 编辑态选中图片的描边（临时装饰类，保存时会被剥离） */
+.editor-content img.img-selected { outline: 2px solid var(--primary); outline-offset: 2px; }
 .editor-content blockquote {
   border-left: 4px solid var(--primary); background: var(--sel);
   padding: 8px 14px; margin: 10px 0; border-radius: 0 6px 6px 0; color: #444;
@@ -481,3 +489,261 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
 /* 文件夹内「新建笔记」按钮 */
 .tree-new-note { color: var(--text2); font-size: 12px; padding: 3px 8px 3px 26px; cursor: pointer; border-radius: 6px; }
 .tree-new-note:hover { color: var(--primary); background: var(--sel); }
+
+/* ==========================================================================
+   移动端 / 触摸设备适配
+   ========================================================================== */
+
+/* ---------- 抽屉遮罩层（仅窄屏启用，宽屏恒隐藏） ---------- */
+.sidebar-mask {
+  position: fixed; inset: 0; z-index: 40;
+  background: rgba(0, 0, 0, .35);
+  opacity: 0; pointer-events: none; transition: opacity .18s ease;
+}
+.sidebar-mask.show { opacity: 1; pointer-events: auto; }
+
+/* ---------- 拖拽手柄：桌面端隐藏，触摸设备下作为排序/移动的唯一入口 ---------- */
+.drag-handle {
+  display: none; flex-shrink: 0; align-items: center; justify-content: center;
+  width: 30px; align-self: stretch; margin: -6px -4px -6px 2px;
+  color: var(--text2); font-size: 15px; line-height: 1;
+  cursor: grab; touch-action: none; -webkit-user-select: none; user-select: none;
+}
+.tree-row.touch-dragging, .tree-note-row.touch-dragging { opacity: .45; background: var(--sel); }
+
+/* ---------- 触摸设备（无 hover 能力）：操作按钮常驻 ---------- */
+@media (hover: none) {
+  /* 长按要用来出菜单，必须先掐掉系统自带的文本选择与 iOS 长按气泡，
+     否则手指按住 0.5 秒先弹出的是「拷贝/查询」而不是我们的菜单 */
+  .tree-row, .tree-note-row {
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+  }
+  /* 触摸设备上 :hover 会「粘住」，改为不产生背景变化，仅保留 active 态 */
+  .tree-row:hover, .tree-note-row:hover { background: transparent; }
+  .tree-row.active, .tree-note-row.active { background: var(--sel); }
+
+  /* 依赖 hover 才显形的操作按钮，改为常驻 */
+  .tree-actions, .tree-note-actions { display: flex; }
+  /* 笔记行的操作容器目前是空的，常驻后会凭空撑出 gap + margin 的空隙 */
+  .tree-actions:empty, .tree-note-actions:empty { display: none; }
+  .tree-action {
+    min-width: 30px; min-height: 30px; padding: 0 6px; font-size: 15px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+
+  /* 拖拽手柄出场，同时关闭 HTML5 原生拖拽的抓手光标 */
+  .drag-handle { display: flex; }
+  .tree-row[draggable="true"], .tree-note-row[draggable="true"] { cursor: default; }
+}
+
+/* ---------- 窄屏：单栏 + 抽屉式侧栏 ---------- */
+@media (max-width: 768px) {
+  body { font-size: 15px; }
+
+  /* 顶栏压缩 + 刘海屏安全区 */
+  .topbar {
+    height: 44px; padding: 0 12px;
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+  }
+  .brand { font-size: 15px; }
+
+  /* 侧栏脱离文档流，变为覆盖式抽屉 */
+  .sidebar {
+    position: fixed; top: 44px; left: 0; bottom: 0; z-index: 50;
+    width: min(84vw, 320px) !important; min-width: 0; max-width: none;
+    box-shadow: 2px 0 12px rgba(0, 0, 0, .12);
+    transform: translateX(0); transition: transform .22s ease;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  /* 复用既有 .collapsed 语义：窄屏下「折叠」= 抽屉滑出屏幕，而非压缩宽度 */
+  .sidebar.collapsed {
+    width: min(84vw, 320px) !important;
+    transform: translateX(-100%);
+    border-right: 1px solid var(--border) !important;
+  }
+  .sidebar.collapsed > * { visibility: visible; }
+  .collapsible { transition: transform .22s ease; }
+
+  /* 编辑器独占整屏 */
+  .editor { width: 100%; min-width: 0; }
+  .editor-head-top { padding: 6px 12px; }
+
+  .sidebar-head { padding: 10px 12px 6px; }
+  .sort-select { max-width: 128px; }
+  .sidebar-head-actions { gap: 6px; margin-left: auto; }
+
+  /* 树行左侧缩进收窄，把宽度让给文件名 */
+  .tree-note-row { padding-left: 24px; }
+  .tree-note-time { display: none; }
+  .tree-new-note { padding-left: 24px; }
+  .tree-lock-row { padding-left: 24px; }
+
+  /* 标题与正文 */
+  .editor-head { padding: 10px 12px 6px; flex-wrap: wrap; }
+  .note-title-input { font-size: 19px; }
+  .editor-content { padding: 14px 14px 160px; }
+  .editor-foot {
+    padding: 6px 12px;
+    padding-bottom: max(6px, env(safe-area-inset-bottom));
+  }
+  .autosave-hint { display: none; }
+  .tb-flex { display: none; }
+
+  /* 弹窗铺满可用宽度 */
+  .modal { width: 100%; max-width: calc(100vw - 24px); }
+
+  /* 表格横向可滚，不撑破版心 */
+  .editor-content table { min-width: 0; font-size: 14px; }
+  .editor-content pre { padding: 12px; font-size: 12.5px; }
+  .editor-content ul, .editor-content ol { padding-left: 22px; }
+}
+
+/* ---------- 触摸设备的点击目标与字号 ----------
+   这些规则的触发条件是「用手指操作」而不是「屏幕窄」，所以按能力查询而非尺寸断点。
+   大折叠内屏（CSS 宽 724~896px）、平板、触屏笔记本都会命中 hover:none 却不命中
+   max-width:768px；若把 44px 可点区和 16px 字号锁在窄屏块里，这些设备会拿到
+   桌面尺寸——实测内屏上工具栏按钮只有 30x25px，手指几乎点不中。
+   放在窄屏块之后，确保同特异性下本块生效。 */
+@media (hover: none) {
+  /* 列宽拖拽只绑了 mousedown，触摸端既拖不动、5px 宽也点不中，索性不占位 */
+  .resizer { display: none; }
+
+  /* 工具栏：不再换行堆高，改为单行横向滚动。
+     中等宽屏正文区约 400~600px，二十几个按钮换行会堆三四行压扁编辑区 */
+  .toolbar {
+    flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
+    gap: 1px; padding: 4px 8px;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  }
+  .toolbar::-webkit-scrollbar { display: none; }
+  .tb {
+    flex-shrink: 0; min-width: 40px; min-height: 40px; padding: 8px 9px; font-size: 15px;
+  }
+  .tb-select { flex-shrink: 0; min-height: 36px; font-size: 16px; }
+  .tb-sep { flex-shrink: 0; }
+  /* 颜色控件是嵌套 flex 容器，在 nowrap 下同样不能被压缩，
+     且内部两个按钮要与外层 .tb 垂直对齐，否则看起来像换了行。
+     两个子按钮都要够手指点：左键=直接应用当前色，右键=唤出选色器 */
+  .color-control { flex-shrink: 0; align-items: center; }
+  .color-control .tb { min-height: 40px; }
+  .color-apply { width: 40px; min-width: 40px; }
+  .color-menu-btn { width: 40px; min-width: 40px; padding: 3px; font-size: 15px; }
+  .color-native-input { inset: 0 0 0 40px; width: calc(100% - 40px); }
+
+  /* 树行加高到接近 44px 可点区 */
+  .tree-row { padding: 10px 8px; gap: 8px; }
+  .tree-note-row { padding-top: 10px; padding-bottom: 10px; padding-right: 8px; gap: 8px; }
+  .tree-name, .tree-note-name { font-size: 15px; }
+  .tree-new-note { padding-top: 9px; padding-bottom: 9px; padding-right: 8px; font-size: 13px; }
+  .tree-lock-row { padding-top: 9px; padding-bottom: 9px; padding-right: 8px; }
+  .tree-lock-row .flp-btn { padding: 6px 12px; font-size: 13px; }
+
+  /* 顶栏与侧栏头部的按钮 */
+  .topbar-actions .btn { min-height: 34px; }
+  .sort-select { height: 34px; font-size: 16px; }
+  .sidebar-head-actions .btn.icon { min-height: 34px; min-width: 34px; }
+  #btnExpandSidebar { font-size: 17px !important; padding: 6px 10px !important; min-height: 36px; }
+
+  /* 弹窗、右键（长按）菜单、选区气泡的点击区放大 */
+  .modal-foot .btn { min-height: 40px; padding: 8px 16px; }
+  .context-menu button { padding: 12px 16px; font-size: 15px; }
+  .sb-btn { min-width: 34px; min-height: 34px; }
+
+  /* 表格单元格留出可点宽度 */
+  .editor-content th, .editor-content td { padding: 6px 8px; min-width: 44px; }
+
+  /* iOS 聚焦字号 <16px 的控件会自动放大页面且回不去，交互控件一律 >=16px */
+  input, textarea, select,
+  .sb-select, .modal input, .modal textarea, .modal select {
+    font-size: 16px;
+  }
+  .editor-content { font-size: 16px; line-height: 1.75; }
+
+  /* 尺寸拖拽角标只绑了 mousedown，触摸端拖不动，隐藏后靠工具条档位按钮调整 */
+  .img-resize-handle { display: none !important; }
+}
+
+/* ---------- 图片尺寸拖拽角标 ----------
+   JS 动态创建挂在 body 上，跟随选中图片右下角定位（fixed），
+   z-index 高于浮动工具条（160），低于 lightbox（400） */
+.img-resize-handle {
+  position: fixed; z-index: 170;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--primary); border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .35);
+  cursor: nwse-resize;
+}
+.img-resize-handle.hidden { display: none; }
+
+/* ---------- 图片放大浮窗（lightbox） ---------- */
+.img-lightbox {
+  position: fixed; inset: 0; z-index: 400;
+  background: rgba(10, 14, 20, .86);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; cursor: zoom-out;
+}
+.img-lightbox.hidden { display: none; }
+.img-lightbox img {
+  max-width: 96vw; max-height: 92vh;
+  border-radius: 8px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, .6);
+}
+
+/* ---------- 导出 PDF：浏览器打印通道 ----------
+   隐藏所有非正文 UI，只留标题与正文。
+   注意 #app 是 height:100vh + 内部滚动的 flex 布局，
+   不重置为 block/auto/visible 的话，打印只会输出裁剪后的第一页。 */
+@media print {
+  .topbar, .sidebar, .resizer, .sidebar-mask,
+  .editor-head-top, .toolbar, .editor-foot,
+  .float-bar, .sel-bubble, .context-menu, .modal-mask, #toastBox,
+  .img-lightbox, .img-resize-handle,
+  #btnExportPdf, #btnToggleEdit, #noteMeta,
+  .editor-empty {
+    display: none !important;
+  }
+
+  #app, .main, .editor, .editor-main, .editor-scroll {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  html, body {
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+
+  .editor-head { padding: 0 0 8px; border: none; }
+  .note-title-input {
+    border: none; padding: 0;
+    font-size: 24px; font-weight: 700; color: #000;
+    background: transparent;
+  }
+
+  .editor-content {
+    padding: 0; max-width: none;
+    color: #000; font-size: 13px;
+  }
+  .editor-content img,
+  .editor-content pre,
+  .editor-content table,
+  .editor-content blockquote {
+    break-inside: avoid;
+  }
+  .editor-content img { cursor: default; box-shadow: none; }
+  .editor-content img.img-selected { outline: none; }
+  .editor-content pre {
+    background: #f6f8fa !important; color: #1f2328 !important;
+    border: 1px solid #d0d7de;
+  }
+  .editor-content pre code { color: inherit; }
+  .editor-content a { color: #0550ae; text-decoration: underline; }
+  .editor-content table th { background: #f6f8fa !important; color: #1f2328 !important; }
+  .editor-content th, .editor-content td { border-color: #d0d7de !important; color: #1f2328; }
+  .editor-content blockquote { color: #57606a; border-left-color: #d0d7de; }
+}

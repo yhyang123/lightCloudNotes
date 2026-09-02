@@ -2,7 +2,11 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="format-detection" content="telephone=no">
+<meta name="theme-color" content="#316dca">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>nasCloudNote · 云笔记</title>
 <link rel="stylesheet" href="/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📝</text></svg>">
@@ -21,7 +25,6 @@
     <!-- 侧栏：文件夹树 + 笔记列表 -->
     <aside class="sidebar collapsible" id="sidebar">
       <div class="sidebar-head">
-        <span class="sidebar-title">文件夹</span>
         <div class="sidebar-head-actions">
           <select id="sortMode" class="sort-select" title="排序方式" aria-label="排序方式">
             <option value="time">按修改时间</option>
@@ -36,6 +39,7 @@
       <div class="tree" id="folderTree"></div>
     </aside>
     <div class="resizer" id="resizerSidebar" data-target="sidebar"></div>
+    <div class="sidebar-mask hidden" id="sidebarMask"></div>
 
     <!-- 右栏：编辑器 -->
     <section class="editor" id="editorPane">
@@ -51,6 +55,7 @@
         <div class="editor-head">
           <input id="noteTitle" class="note-title-input" placeholder="笔记标题" maxlength="200" title="点击可直接修改笔记名称">
           <span id="noteMeta" class="note-meta"></span>
+          <button id="btnExportPdf" class="btn ghost sm" title="导出为 PDF（打开打印对话框后选择「另存为 PDF」）">⤓ PDF</button>
           <button id="btnToggleEdit" class="btn primary sm btn-edit">✏️ 编辑</button>
         </div>
         <div class="toolbar" id="toolbar">
@@ -200,6 +205,22 @@
   <button class="sb-btn" data-act="copy" title="复制代码内容">复制</button>
   <button class="sb-btn" data-act="exit" title="在代码块下方新建段落">退出 ↵</button>
   <button class="sb-btn danger" data-act="del" title="删除整个代码块">🗑</button>
+</div>
+
+<!-- 图片浮动工具条 -->
+<div id="imageBar" class="float-bar hidden">
+  <button class="sb-btn" data-act="small" title="小图（240px）">小</button>
+  <button class="sb-btn" data-act="medium" title="中图（420px）">中</button>
+  <button class="sb-btn" data-act="large" title="大图（640px）">大</button>
+  <button class="sb-btn" data-act="full" title="原始尺寸（不超过正文宽度）">原图</button>
+  <span class="sb-sep"></span>
+  <button class="sb-btn" data-act="zoom" title="放大查看">🔍</button>
+  <button class="sb-btn danger" data-act="del" title="删除图片">🗑</button>
+</div>
+
+<!-- 图片放大浮窗（点击遮罩或 Esc 关闭） -->
+<div id="imgLightbox" class="img-lightbox hidden" role="dialog" aria-label="图片预览">
+  <img id="imgLightboxPic" src="" alt="">
 </div>
 
 <script src="/app.js"></script>

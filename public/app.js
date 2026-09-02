@@ -148,25 +148,125 @@ function setLayout(patch) {
 }
 const sidebarEl = $('#sidebar');
 const resizerSidebar = $('#resizerSidebar');
+const sidebarMask = $('#sidebarMask');
+
+/* 与 style.css 的 @media (max-width: 768px) 断点保持一致 */
+const MOBILE_MQ = window.matchMedia('(max-width: 768px)');
+const TOUCH_MQ = window.matchMedia('(hover: none)');
+function isMobile() { return MOBILE_MQ.matches; }
+function isTouch() { return TOUCH_MQ.matches || 'ontouchstart' in window; }
+
+/* 正文的最小可用宽度：低于这个数，工具栏和表格就开始难用了。
+   大折叠内屏横持约 840px，若直接套用桌面存下的 520px 列宽，正文只剩 300 出头，
+   所以已保存的列宽必须按当前视口夹一次，不能无条件回填。 */
+const EDITOR_MIN_W = 400;
+const SIDEBAR_MIN_W = 200;
+const SIDEBAR_MAX_W = 520;
+/* 中等宽屏（大折叠内屏 724~896px、小平板、分屏窗口）上，桌面存下的 520px 会让
+   侧栏比正文还宽。这里给一条随视口伸缩的上限：取「视口 32%」与「视口 - 700」
+   的较大者，再夹进 [200, 520]。
+   两段都是关于视口的连续函数，取 max / min 后依然连续，因此拖动窗口时侧栏
+   宽度平滑变化，不会在某个断点上突跳。
+   实测：855px 内屏得 273px（正文 577px），1220px 起恢复到完整的 520px。 */
+const SIDEBAR_VW_RATIO = 0.32;
+const DESKTOP_COMFORT_W = 700;
+function fitSidebarWidth(w) {
+  const vw = window.innerWidth;
+  /* .resizer 宽 5px，触摸端已隐藏，这里统一预留属于保守估计 */
+  const room = vw - EDITOR_MIN_W - 5;
+  const cap = Math.min(SIDEBAR_MAX_W, Math.max(vw * SIDEBAR_VW_RATIO, vw - DESKTOP_COMFORT_W));
+  return Math.round(Math.max(SIDEBAR_MIN_W, Math.min(w, cap, room)));
+}
 
 function applyLayout() {
   const L = getLayout();
-  if (L.sidebarW) { sidebarEl.style.width = L.sidebarW + 'px'; sidebarEl.style.flex = 'none'; }
-  if (L.sidebarHidden) collapsePane('sidebar');
+  if (isMobile()) {
+    /* 窄屏不吃已保存的列宽（宽度由 CSS 接管），抽屉默认关闭，先让编辑区露出来 */
+    sidebarEl.style.width = '';
+    sidebarEl.style.flex = '';
+    collapsePane('sidebar', { persist: false });
+    return;
+  }
+  if (L.sidebarW) {
+    sidebarEl.style.width = fitSidebarWidth(L.sidebarW) + 'px';
+    sidebarEl.style.flex = 'none';
+  }
+  /* 这里必须显式二选一：窄屏分支会强行挂上 .collapsed，
+     折叠屏展开、手机横屏、桌面窗口拉宽时若只处理 collapse 一侧，
+     .collapsed 会残留在大屏上，表现为侧栏凭空消失。
+     applyLayout 是在还原状态而非响应用户操作，两边都不回写存储。 */
+  if (L.sidebarHidden) collapsePane('sidebar', { persist: false });
+  else expandPane('sidebar', { persist: false });
 }
 
-function collapsePane(which) {
+function syncMask(open) {
+  if (!sidebarMask) return;
+  if (open && isMobile()) {
+    sidebarMask.classList.remove('hidden');
+    /* 先上屏再加 .show，让 opacity 过渡有起始帧 */
+    requestAnimationFrame(() => sidebarMask.classList.add('show'));
+  } else {
+    sidebarMask.classList.remove('show');
+    sidebarMask.classList.add('hidden');
+  }
+}
+
+function collapsePane(which, opts) {
+  const persist = !opts || opts.persist !== false;
   sidebarEl.classList.add('collapsed');
   resizerSidebar.classList.add('hidden-resizer');
   $('#btnExpandSidebar').classList.remove('hidden');
-  setLayout({ sidebarHidden: true });
+  syncMask(false);
+  if (persist && !isMobile()) setLayout({ sidebarHidden: true });
 }
-function expandPane(which) {
+function expandPane(which, opts) {
+  const persist = !opts || opts.persist !== false;
   sidebarEl.classList.remove('collapsed');
   resizerSidebar.classList.remove('hidden-resizer');
-  $('#btnExpandSidebar').classList.add('hidden');
-  setLayout({ sidebarHidden: false });
+  /* 窄屏下 ☰ 是抽屉的唯一入口，必须常驻 */
+  if (isMobile()) {
+    syncMask(true);
+  } else {
+    $('#btnExpandSidebar').classList.add('hidden');
+    syncMask(false);
+  }
+  if (persist && !isMobile()) setLayout({ sidebarHidden: false });
 }
+
+/* 窄屏下选中笔记后自动收起抽屉，把整屏让给正文 */
+function autoCloseSidebar() {
+  if (isMobile() && !sidebarEl.classList.contains('collapsed')) {
+    collapsePane('sidebar', { persist: false });
+  }
+}
+
+if (sidebarMask) {
+  sidebarMask.addEventListener('click', () => collapsePane('sidebar', { persist: false }));
+}
+
+/* 跨越断点时重算布局，避免旋屏后停留在错误形态 */
+MOBILE_MQ.addEventListener('change', () => {
+  sidebarEl.style.width = '';
+  sidebarEl.style.flex = '';
+  syncMask(false);
+  applyLayout();
+});
+
+/* 宽屏内部的宽度变化不跨断点，change 不会触发，但正文照样可能被挤瘦
+   （折叠屏内屏横竖切换、桌面窗口缩放都属于这种）。这里只重夹列宽，
+   不碰折叠状态，避免与用户手动收起侧栏的意图打架。 */
+let fitTimer = 0;
+window.addEventListener('resize', () => {
+  if (isMobile()) return;
+  clearTimeout(fitTimer);
+  fitTimer = setTimeout(() => {
+    if (isMobile()) return;
+    const L = getLayout();
+    if (!L.sidebarW) return;
+    sidebarEl.style.width = fitSidebarWidth(L.sidebarW) + 'px';
+    sidebarEl.style.flex = 'none';
+  }, 120);
+});
 
 /* 拖拽逻辑 */
 function bindResizer(handle, pane, minW, maxW, saveKey) {
@@ -195,7 +295,7 @@ function bindResizer(handle, pane, minW, maxW, saveKey) {
     document.addEventListener('mouseup', onUp);
   });
 }
-bindResizer(resizerSidebar, sidebarEl, 200, 520, 'sidebarW');
+bindResizer(resizerSidebar, sidebarEl, SIDEBAR_MIN_W, SIDEBAR_MAX_W, 'sidebarW');
 applyLayout();
 
 $('#btnCollapseSidebar').addEventListener('click', () => collapsePane('sidebar'));
@@ -250,6 +350,13 @@ sortSelect.addEventListener('change', () => {
    - 落在中间（40%）        → 放进这个文件夹里，属于「移动」，可跨父级、跨类型
    另外把文件夹拖到树的空白处 = 移回顶层，拖到「未分组」行 = 笔记移出分类。 */
 let dragCtx = null;
+
+/* 行元素 / 落点容器 → 它代表的业务身份。
+   鼠标端这些信息在闭包里就够用了；触摸端必须按手指坐标反查元素，
+   拿到元素后还得知道它是谁，所以额外登记一份。
+   用 WeakMap 而非 data-*：值里有对象和函数，且随 DOM 重建自动回收。 */
+const rowMeta = new WeakMap();
+const dropZones = new WeakMap();
 
 /* 把整个同级的最终顺序提交给服务端。
    提交完整列表而非单个位移，服务端按下标重写 order —— 重放多少次结果都一样。 */
@@ -335,6 +442,10 @@ async function moveIntoFolder(ctx, targetId) {
 /* 只收不发的落点：「未分组」标题行、树的空白区域。
    它们不是可拖动的行，也不参与排序，只承接「移出到这里」这一种意图。 */
 function makeDropZone(el, folderId, acceptKind, markClass, guard) {
+  /* 登记而不是往 DOM 上刷 data-*：触摸拖拽要按手指位置反查落点，
+     复用这里的 guard 才能保证和鼠标端判一样的结果 */
+  dropZones.set(el, { folderId, acceptKind, markClass, guard });
+
   const ok = (e) => dragCtx && dragCtx.kind === acceptKind
     && canDropInto(folderId) && (!guard || guard(e));
 
@@ -363,6 +474,9 @@ function makeDropZone(el, folderId, acceptKind, markClass, guard) {
    siblings 是当前「已排好序」的同级数组 —— 拖拽结果要基于用户眼前看到的顺序计算。 */
 function makeDraggable(row, kind, id, parentId, siblings) {
   row.draggable = true;
+  /* 触摸端要在 touchmove 里按手指位置找「当前悬停在哪一行」，
+     那时拿到的只是个 DOM 元素，得能反查出它代表谁 */
+  rowMeta.set(row, { kind, id, parentId, siblings });
 
   row.addEventListener('dragstart', (e) => {
     e.stopPropagation();
@@ -416,34 +530,241 @@ function makeDraggable(row, kind, id, parentId, siblings) {
 
     const ctx = dragCtx;
     dragCtx = null;
+    await performDrop(ctx, intent, id);
+  });
 
-    if (intent === 'into') {
-      await moveIntoFolder(ctx, id);
-      return;
+  /* 触摸端的拖拽通路：HTML5 DnD 在移动浏览器上不派发，只能自己用 touch 事件走一遍。
+     长按菜单不在这里绑 —— 它是 contextmenu 的触摸等价物，绑在渲染处更贴切。 */
+  if (isTouch()) bindTouchDrag(row, kind, id, parentId, siblings);
+}
+
+/* 落点确定后的实际执行。鼠标 drop 与 touch 拖拽共用同一条路径，
+   保证两种输入方式的结果与提示完全一致。 */
+async function performDrop(ctx, intent, targetId) {
+  if (!ctx) return;
+
+  if (intent === 'into') {
+    await moveIntoFolder(ctx, targetId);
+    return;
+  }
+
+  /* 基于用户眼前的顺序算新序列：先摘掉被拖的那一项，再插到目标位置 */
+  const ids = ctx.siblings.map((it) => it.id).filter((x) => x !== ctx.id);
+  const at = ids.indexOf(targetId);
+  if (at < 0) return;
+  ids.splice(intent === 'after' ? at + 1 : at, 0, ctx.id);
+
+  try {
+    await commitOrder(ctx.kind, ctx.parentId, ids);
+    /* 拖过就意味着用户要的是自己的顺序，自动切到自定义模式，
+       否则提交成功了但界面仍按时间/名称排，看上去像「拖了没反应」 */
+    if (getSortMode() !== 'custom') {
+      setSortMode('custom');
+      sortSelect.value = 'custom';
+      toast('已切换为自定义顺序');
     }
+    /* order 由服务端重算，重新拉数据而不是本地猜 */
+    if (ctx.kind === 'note') await loadFolderNotes(ctx.parentId);
+    else await loadTree();
+  } catch (err) {
+    toast(err.message || '排序失败');
+  }
+}
 
-    /* 基于用户眼前的顺序算新序列：先摘掉被拖的那一项，再插到目标位置 */
-    const ids = ctx.siblings.map((it) => it.id).filter((x) => x !== ctx.id);
-    const at = ids.indexOf(id);
-    if (at < 0) return;
-    ids.splice(intent === 'after' ? at + 1 : at, 0, ctx.id);
+/* ================= 触摸端交互补全 ================= */
 
-    try {
-      await commitOrder(ctx.kind, ctx.parentId, ids);
-      /* 拖过就意味着用户要的是自己的顺序，自动切到自定义模式，
-         否则提交成功了但界面仍按时间/名称排，看上去像「拖了没反应」 */
-      if (getSortMode() !== 'custom') {
-        setSortMode('custom');
-        sortSelect.value = 'custom';
-        toast('已切换为自定义顺序');
-      }
-      /* order 由服务端重算，重新拉数据而不是本地猜 */
-      if (ctx.kind === 'note') await loadFolderNotes(ctx.parentId);
-      else await loadTree();
-    } catch (err) {
-      toast(err.message || '排序失败');
+/* 长按 = 右键。手机浏览器不派发 contextmenu，重命名/置顶/加密/移动
+   这几个只挂在右键菜单上的功能在手机上等于消失，必须补一条通路。
+   getTarget 传函数而非对象：菜单弹出时才求值，拿到的是当时最新的节点数据。 */
+const LONG_PRESS_MS = 480;
+const LONG_PRESS_SLOP = 10;
+
+function bindLongPress(el, getTarget) {
+  let timer = null;
+  let sx = 0;
+  let sy = 0;
+  let fired = false;
+
+  const cancel = () => {
+    if (timer) { clearTimeout(timer); timer = null; }
+  };
+
+  el.addEventListener('touchstart', (e) => {
+    /* 手柄按下是拖拽，不该同时酝酿菜单；多指是缩放/滚动，一律不接 */
+    if (e.touches.length > 1 || e.target.closest('.drag-handle')) return;
+    fired = false;
+    sx = e.touches[0].clientX;
+    sy = e.touches[0].clientY;
+    timer = setTimeout(() => {
+      timer = null;
+      fired = true;
+      /* 已经确定要出菜单了，给一次触觉反馈，让用户知道手可以松了 */
+      if (navigator.vibrate) navigator.vibrate(12);
+      showContextMenu(sx, sy, getTarget());
+    }, LONG_PRESS_MS);
+  }, { passive: true });
+
+  /* 手指移动超过阈值说明用户想滚列表，不是长按 */
+  el.addEventListener('touchmove', (e) => {
+    if (!timer) return;
+    const t = e.touches[0];
+    if (Math.abs(t.clientX - sx) > LONG_PRESS_SLOP || Math.abs(t.clientY - sy) > LONG_PRESS_SLOP) cancel();
+  }, { passive: true });
+
+  el.addEventListener('touchend', (e) => {
+    cancel();
+    /* 菜单已弹出时，抬手不应再触发这一行的 click（打开笔记/展开文件夹），
+       否则菜单刚出现就被跳转盖掉 */
+    if (fired) {
+      e.preventDefault();
+      fired = false;
     }
   });
+
+  el.addEventListener('touchcancel', cancel, { passive: true });
+}
+
+/* 拖拽手柄的触摸实现。
+   为什么用专用手柄而不是「长按后拖动」：长按已经派给菜单了，两者抢同一个手势
+   只会互相误触发；手柄还自带可发现性，用户一眼看得出这行能拖。 */
+function bindTouchDrag(row, kind, id, parentId, siblings) {
+  const handle = row.querySelector('.drag-handle');
+  if (!handle) return;
+
+  let active = false;
+  let lastEl = null;
+  /* 边缘自动滚动：拖拽期间 touchmove 被 preventDefault，列表不会跟着手指滚。
+     手机一屏就那么几行，目标只要不在当前视口里就永远够不着，必须自己滚。 */
+  let edgeTimer = null;
+  let edgeDir = 0;
+  const EDGE_ZONE = 56;
+  const EDGE_STEP = 8;
+
+  const stopEdgeScroll = () => {
+    if (edgeTimer) { clearInterval(edgeTimer); edgeTimer = null; }
+    edgeDir = 0;
+  };
+
+  const updateEdgeScroll = (clientY) => {
+    const tree = document.getElementById('folderTree');
+    if (!tree) return;
+    const r = tree.getBoundingClientRect();
+    let dir = 0;
+    if (clientY < r.top + EDGE_ZONE) dir = -1;
+    else if (clientY > r.bottom - EDGE_ZONE) dir = 1;
+
+    if (dir === edgeDir) return;
+    stopEdgeScroll();
+    if (!dir) return;
+    edgeDir = dir;
+    /* 用定时器而不是每次 touchmove 滚一格：手指停在边缘不动时也要持续滚 */
+    edgeTimer = setInterval(() => { tree.scrollTop += dir * EDGE_STEP; }, 16);
+  };
+
+  const cleanup = () => {
+    active = false;
+    lastEl = null;
+    stopEdgeScroll();
+    row.classList.remove('touch-dragging');
+    clearDropMarks();
+    dragCtx = null;
+  };
+
+  handle.addEventListener('touchstart', (e) => {
+    if (e.touches.length > 1) return;
+    /* 手柄上的手势只可能是拖拽，直接吃掉，避免页面跟着滚 */
+    e.preventDefault();
+    e.stopPropagation();
+    active = true;
+    dragCtx = {
+      kind, id, parentId, siblings,
+      subtree: kind === 'folder' ? folderSubtreeIds(id) : null,
+      locked: row.dataset.lock === 'locked',
+    };
+    row.classList.add('touch-dragging');
+    if (navigator.vibrate) navigator.vibrate(8);
+  });
+
+  handle.addEventListener('touchmove', (e) => {
+    if (!active) return;
+    e.preventDefault();
+    const t = e.touches[0];
+    updateEdgeScroll(t.clientY);
+    clearDropMarks();
+    lastEl = null;
+
+    /* 手指底下是谁：touch 事件的 target 永远是 touchstart 那个元素，
+       必须按坐标现查，这也是 touch 拖拽比鼠标麻烦的根源 */
+    const hit = document.elementFromPoint(t.clientX, t.clientY);
+    if (!hit) return;
+
+    /* 先看是不是落在某一行上 —— 行的意图更具体，优先级高于容器 */
+    const overRow = hit.closest('.tree-row, .tree-note-row');
+    /* 停在自己身上时什么都不该亮：行会因 dragCtx.id === id 拒绝，
+       若放任它往下走就会去点亮容器的「移到顶层」，等于原地不动却提示要挪走 */
+    if (overRow === row) return;
+    if (overRow && rowMeta.has(overRow)) {
+      const meta = rowMeta.get(overRow);
+      const intent = dropIntent(t, overRow, meta.kind, meta.id, meta.parentId);
+      if (intent) {
+        overRow.classList.toggle('drop-before', intent === 'before');
+        overRow.classList.toggle('drop-after', intent === 'after');
+        overRow.classList.toggle('drop-into', intent === 'into');
+        lastEl = overRow;
+        return;
+      }
+    }
+
+    /* 行不接就交给容器（「未分组」行、树空白区）。
+       从命中点向上找最近的已登记落点，语义与鼠标端的事件冒泡一致。 */
+    const zoneEl = findDropZoneFrom(hit);
+    if (zoneEl) {
+      const z = dropZones.get(zoneEl);
+      if (dragCtx.kind === z.acceptKind && canDropInto(z.folderId)
+          && (!z.guard || z.guard({ target: hit }))) {
+        zoneEl.classList.add(z.markClass);
+        lastEl = zoneEl;
+      }
+    }
+  });
+
+  handle.addEventListener('touchend', async (e) => {
+    if (!active) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const target = lastEl;
+    const ctx = dragCtx;
+    /* 先复位再落库：performDrop 里有 await，期间树会重建，
+       此时 row 已是游离节点，晚清理就清不掉了 */
+    const rowTarget = target && rowMeta.has(target) ? rowMeta.get(target) : null;
+    const zone = target && dropZones.has(target) ? dropZones.get(target) : null;
+    /* intent 必须在 clearDropMarks 之前从 class 读出来 */
+    let intent = null;
+    if (target && rowTarget) {
+      if (target.classList.contains('drop-before')) intent = 'before';
+      else if (target.classList.contains('drop-after')) intent = 'after';
+      else if (target.classList.contains('drop-into')) intent = 'into';
+    }
+    cleanup();
+
+    if (!target) return;
+    if (rowTarget && intent) await performDrop(ctx, intent, rowTarget.id);
+    else if (zone) await moveIntoFolder(ctx, zone.folderId);
+  });
+
+  handle.addEventListener('touchcancel', cleanup);
+}
+
+/* 从命中元素向上找最近的已登记落点容器。
+   模拟鼠标端事件冒泡时「谁先收到 dragover」的顺序。 */
+function findDropZoneFrom(el) {
+  let cur = el;
+  while (cur && cur !== document.body) {
+    if (dropZones.has(cur)) return cur;
+    cur = cur.parentElement;
+  }
+  return null;
 }
 
 /* ================= 文件夹树 ================= */
@@ -524,7 +845,8 @@ function renderTree() {
           <button class="tree-action" data-act="newnote" title="在此文件夹新建笔记">📝</button>
           <button class="tree-action" data-act="new" title="新建子文件夹">＋</button>
           <button class="tree-action" data-act="del" title="删除">🗑</button>
-        </span>`;
+        </span>
+        <span class="drag-handle" aria-label="拖动排序或移动">⠿</span>`;
 
       row.addEventListener('click', (e) => {
         if (e.target.closest('.tree-action')) return;
@@ -540,6 +862,8 @@ function renderTree() {
         e.preventDefault();
         showContextMenu(e.clientX, e.clientY, { type: 'folder', id: node.id, node });
       });
+      /* 手机没有右键，长按补上同一条通路 */
+      if (isTouch()) bindLongPress(row, () => ({ type: 'folder', id: node.id, node }));
       makeDraggable(row, 'folder', node.id, parentId || null, sorted);
       const unlockBtn = row.querySelector('[data-act=unlock]');
       if (unlockBtn) unlockBtn.addEventListener('click', (e) => { e.stopPropagation(); promptUnlock(node); });
@@ -643,7 +967,8 @@ function renderNotesBlock(parentEl, folderId) {
         <span class="tree-note-icon" data-lock="${noteLockState}" title="${noteIconTitle}">${noteIcon}${noteLockState === 'unlocked' ? '<span class="lock-badge" aria-label="已解锁">🔓</span>' : ''}</span>
         <span class="tree-note-name" title="${esc(n.title || '无标题笔记')}">${esc(n.title || '无标题笔记')}</span>
         <span class="tree-note-time">${fmtTime(n.updatedAt)}</span>
-        <span class="tree-note-actions"></span>`;
+        <span class="tree-note-actions"></span>
+        <span class="drag-handle" aria-label="拖动排序或移动">⠿</span>`;
       row.addEventListener('click', (e) => {
         if (e.target.closest('.tree-action')) return;
         openNote(n.id);
@@ -652,6 +977,7 @@ function renderNotesBlock(parentEl, folderId) {
         e.preventDefault();
         showContextMenu(e.clientX, e.clientY, { type: 'note', id: n.id, note: n });
       });
+      if (isTouch()) bindLongPress(row, () => ({ type: 'note', id: n.id, note: n }));
       makeDraggable(row, 'note', n.id, folderId || null, sorted);
       block.appendChild(row);
     });
@@ -913,6 +1239,7 @@ async function openNote(id) {
     $('#noteMeta').textContent = `创建于 ${fmtTime(note.createdAt)} · 更新于 ${fmtTime(note.updatedAt)}`;
     $('#editorEmpty').classList.add('hidden');
     $('#editorMain').classList.remove('hidden');
+    autoCloseSidebar(); /* 窄屏下打开笔记即让出整屏 */
     renderTree();
     setTimeout(() => { state.suppressSave = false; }, 50);
   } catch (e) {
@@ -1044,10 +1371,10 @@ function setSaveStatus(text, cls) {
 /* 取待保存的正文：编辑期间的临时装饰类（如单元格高亮）不应落库，
    在克隆副本上清理，避免影响用户当前正在编辑的 DOM 与光标。 */
 function editorContentHTML() {
-  if (!editorEl.querySelector('.cell-active, pre .code-lang')) return editorEl.innerHTML;
+  if (!editorEl.querySelector('.cell-active, .img-selected, pre .code-lang')) return editorEl.innerHTML;
   const clone = editorEl.cloneNode(true);
-  clone.querySelectorAll('.cell-active').forEach((el) => {
-    el.classList.remove('cell-active');
+  clone.querySelectorAll('.cell-active, .img-selected').forEach((el) => {
+    el.classList.remove('cell-active', 'img-selected');
     if (!el.classList.length) el.removeAttribute('class');
   });
   stripLegacyCodeLang(clone);
@@ -1914,6 +2241,7 @@ function hideAllFloatBars() {
   hideLinkBubble();
   hideCodeBar();
   hideTableBar();
+  hideImageBar();
 }
 /* 滚动与窗口尺寸变化会让绝对定位的工具条与目标脱节，直接收起最省心 */
 $('.editor-scroll') && $('.editor-scroll').addEventListener('scroll', hideAllFloatBars);
@@ -1923,6 +2251,7 @@ document.addEventListener('mousedown', (e) => {
   if (!linkBubble.contains(e.target) && !e.target.closest('a')) hideLinkBubble();
   if (!codeBar.contains(e.target) && !e.target.closest('pre')) hideCodeBar();
   if (!tableBar.contains(e.target) && !e.target.closest('table')) hideTableBar();
+  if (!imageBar.contains(e.target) && !imgResizeHandle.contains(e.target) && e.target.tagName !== 'IMG') hideImageBar();
 }, true);
 
 /* ---------- 图片 ---------- */
@@ -1947,7 +2276,8 @@ async function uploadImage(file) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '上传失败');
     editorEl.focus();
-    document.execCommand('insertHTML', false, `<img src="${esc(data.url)}" alt="${esc(file.name)}"><p><br></p>`);
+    /* 默认以缩略图插入：大图收窄到 360px 内，小图保持原尺寸不放大 */
+    document.execCommand('insertHTML', false, `<img src="${esc(data.url)}" alt="${esc(file.name)}" style="max-width:min(360px,100%)"><p><br></p>`);
     markDirty();
   } catch (e) {
     toast(e.message, 'error');
@@ -1976,6 +2306,138 @@ editorEl.addEventListener('drop', (e) => {
   if (!imgs.length) return;
   e.preventDefault();
   imgs.forEach(uploadImage);
+});
+
+/* ---------- 图片选中工具条 + 尺寸调整 + 放大浮窗 ---------- */
+const imageBar = $('#imageBar');
+const IMG_PRESETS = { small: 240, medium: 420, large: 640 };
+let activeImage = null;
+
+/* 拖拽角标：编辑态选中图片时吸附在图片右下角，仅指针设备可用 */
+const imgResizeHandle = document.createElement('div');
+imgResizeHandle.id = 'imgResizeHandle';
+imgResizeHandle.className = 'img-resize-handle hidden';
+imgResizeHandle.title = '拖动调整图片宽度';
+document.body.appendChild(imgResizeHandle);
+
+function hideImageBar() {
+  imageBar.classList.add('hidden');
+  imgResizeHandle.classList.add('hidden');
+  if (activeImage) activeImage.classList.remove('img-selected');
+  activeImage = null;
+}
+
+function selectImage(img) {
+  if (activeImage && activeImage !== img) activeImage.classList.remove('img-selected');
+  activeImage = img;
+  img.classList.add('img-selected');
+  imageBar.classList.remove('hidden');
+  syncImageOverlay();
+}
+
+/* 工具条与角标跟随图片当前位置（改档位 / 拖拽后都要刷新） */
+function syncImageOverlay() {
+  if (!activeImage) return;
+  const rect = activeImage.getBoundingClientRect();
+  placeFloatBar(imageBar, rect);
+  imgResizeHandle.style.top = (rect.bottom - 10) + 'px';
+  imgResizeHandle.style.left = (rect.right - 10) + 'px';
+  imgResizeHandle.classList.remove('hidden');
+}
+
+function setImageWidth(img, px) {
+  img.style.width = px ? px + 'px' : '';
+  img.style.maxWidth = px ? '100%' : '';
+  if (!img.getAttribute('style')) img.removeAttribute('style');
+  markDirty();
+}
+
+/* 编辑态点击图片弹出工具条；只读态点击直接放大预览 */
+editorEl.addEventListener('click', (e) => {
+  const img = e.target.closest('img');
+  if (!img || !editorEl.contains(img)) return;
+  e.preventDefault();
+  if (!state.editMode) { openLightbox(img); return; }
+  selectImage(img);
+});
+
+imageBar.addEventListener('mousedown', (e) => e.preventDefault());
+imageBar.addEventListener('click', (e) => {
+  const btn = e.target.closest('.sb-btn[data-act]');
+  if (!btn || !activeImage) return;
+  const act = btn.dataset.act;
+  if (IMG_PRESETS[act]) {
+    setImageWidth(activeImage, IMG_PRESETS[act]);
+    syncImageOverlay();
+    return;
+  }
+  switch (act) {
+    case 'full':
+      setImageWidth(activeImage, 0);
+      syncImageOverlay();
+      break;
+    case 'zoom':
+      openLightbox(activeImage);
+      break;
+    case 'del': {
+      const target = activeImage;
+      hideImageBar();
+      target.remove();
+      markDirty();
+      toast('已删除图片', 'success');
+      break;
+    }
+  }
+});
+
+/* 角标拖拽：以按下瞬间的宽度为基准，横向位移即宽度增量 */
+imgResizeHandle.addEventListener('mousedown', (e) => {
+  if (!activeImage) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const img = activeImage;
+  const startX = e.clientX;
+  const startW = img.getBoundingClientRect().width;
+  const onMove = (ev) => {
+    const w = Math.max(60, Math.round(startW + ev.clientX - startX));
+    img.style.width = w + 'px';
+    img.style.maxWidth = '100%';
+    syncImageOverlay();
+  };
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    markDirty();
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+});
+
+/* 放大浮窗：点击遮罩或 Esc 关闭 */
+const imgLightbox = $('#imgLightbox');
+function openLightbox(img) {
+  $('#imgLightboxPic').src = img.currentSrc || img.src;
+  imgLightbox.classList.remove('hidden');
+}
+function closeLightbox() {
+  imgLightbox.classList.add('hidden');
+  $('#imgLightboxPic').removeAttribute('src');
+}
+imgLightbox.addEventListener('click', closeLightbox);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !imgLightbox.classList.contains('hidden')) closeLightbox();
+});
+
+/* ---------- 导出 PDF（浏览器打印通道，零依赖） ----------
+   @media print 样式只保留标题与正文，用户在打印对话框选「另存为 PDF」即可。 */
+$('#btnExportPdf').addEventListener('click', () => {
+  if (!state.currentNoteId) { toast('请先打开一篇笔记', 'error'); return; }
+  if (state.noteLocked) { toast('请先解锁笔记再导出', 'error'); return; }
+  hideAllFloatBars();
+  closeLightbox();
+  const oldTitle = document.title;
+  document.title = titleEl.value.trim() || '无标题笔记'; /* 打印文件名默认取页面标题 */
+  try { window.print(); } finally { document.title = oldTitle; }
 });
 
 /* ================= 模态框 ================= */
@@ -2182,6 +2644,13 @@ $('#contextMove').addEventListener('click', () => {
 document.addEventListener('mousedown', (e) => {
   if (!contextMenu.contains(e.target)) hideContextMenu();
 });
+/* 触摸端不能只靠 mousedown：长按 fire 后我们 preventDefault 了 touchend，
+   浏览器不会再合成鼠标事件，菜单就关不掉了。这里补一条原生通路。
+   菜单是在 setTimeout 里弹的，此时 touchstart 早已结束，不会自己关掉自己。 */
+document.addEventListener('touchstart', (e) => {
+  if (contextMenu.classList.contains('hidden')) return;
+  if (!contextMenu.contains(e.target)) hideContextMenu();
+}, { passive: true });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideContextMenu(); });
 window.addEventListener('resize', hideContextMenu);
 
