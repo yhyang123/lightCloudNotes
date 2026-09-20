@@ -17,6 +17,7 @@
   <header class="topbar">
     <div class="brand">📝 nasCloudNote</div>
     <div class="topbar-actions">
+      <button id="btnAutoLock" class="btn ghost" title="自动上锁设置">🔒 <span id="autoLockLabel">5 分钟</span></button>
       <button id="btnSearch" class="btn ghost" title="搜索">🔍 搜索</button>
     </div>
   </header>
@@ -213,6 +214,9 @@
   <button class="sb-btn" data-act="medium" title="中图（420px）">中</button>
   <button class="sb-btn" data-act="large" title="大图（640px）">大</button>
   <button class="sb-btn" data-act="full" title="原始尺寸（不超过正文宽度）">原图</button>
+  <span class="sb-sep"></span>
+  <button class="sb-btn" data-act="rotl" title="向左旋转 90°">↺</button>
+  <button class="sb-btn" data-act="rotr" title="向右旋转 90°">↻</button>
   <span class="sb-sep"></span>
   <button class="sb-btn" data-act="zoom" title="放大查看">🔍</button>
   <button class="sb-btn danger" data-act="del" title="删除图片">🗑</button>

@@ -1011,6 +1011,7 @@ async function lockFolderNow(node) {
   }
 
   await loadTree();
+  syncAutoLockBadge();
   toast(`「${node.name}」已重新上锁`, 'success');
 }
 
@@ -1074,6 +1075,161 @@ function noteFolderOf(noteId) {
   }
   return null;
 }
+
+/* ================= 闲置自动上锁 =================
+   解锁令牌是会话级的，但会话可能一整天都开着不关。这里再加一层「本设备闲置超时」：
+   超过设定时长没有任何笔记/文件夹操作，就撤销本会话全部令牌，
+   等同于对所有已解锁的文件夹和笔记各执行一次「🔒 重新上锁」。
+   时长存 localStorage（跟设备走，不跟会话走），0 表示关闭。 */
+const AUTO_LOCK_DEFAULT_MIN = 5;
+const AUTO_LOCK_OPTIONS = [0, 1, 3, 5, 10, 30, 60];
+
+function getAutoLockMin() {
+  const v = getLayout().autoLockMin;
+  /* 只认白名单里的值：手工改过的 localStorage 或历史脏数据一律回落到默认值。
+     放任 NaN 进来会让后面的时间差比较恒为 false —— 那是自动上锁静默失效，最危险的一种坏法。 */
+  return AUTO_LOCK_OPTIONS.indexOf(v) === -1 ? AUTO_LOCK_DEFAULT_MIN : v;
+}
+function setAutoLockMin(min) {
+  setLayout({ autoLockMin: min });
+  restartAutoLockWatch();
+  syncAutoLockBadge();
+}
+
+function hasUnlocked() {
+  const box = getTokens();
+  return Object.keys(box.folder).length > 0 || Object.keys(box.note).length > 0;
+}
+
+/* 顶栏按钮：显示当前时长，会话内存在已解锁内容时点亮 */
+function syncAutoLockBadge() {
+  const btn = $('#btnAutoLock');
+  if (!btn) return;
+  const min = getAutoLockMin();
+  const label = $('#autoLockLabel');
+  if (label) label.textContent = min ? `${min} 分钟` : '关闭';
+  btn.classList.toggle('armed', min > 0 && hasUnlocked());
+  btn.title = min
+    ? `自动上锁：闲置 ${min} 分钟后重新上锁（点击修改）`
+    : '自动上锁：已关闭（点击修改）';
+}
+
+let lastActivityAt = Date.now();
+let autoLockTimer = null;
+let autoLocking = false;
+
+/* 活动打点。滚动、连续按键这类事件很密集，节流到 1 秒一次；
+   命中后只写一个时间戳，不碰 DOM，开销可忽略。 */
+function markActivity() {
+  const now = Date.now();
+  if (now - lastActivityAt < 1000) return;
+  lastActivityAt = now;
+}
+['pointerdown', 'keydown', 'wheel', 'touchstart', 'input'].forEach((ev) => {
+  document.addEventListener(ev, markActivity, { capture: true, passive: true });
+});
+
+/* 检查粒度取超时时长的 1/10，再夹进 [3s, 15s]：
+   1 分钟档最多迟到 6 秒，5 分钟档最多迟到 15 秒，既不过度唤醒也不会明显拖沓。 */
+function restartAutoLockWatch() {
+  clearInterval(autoLockTimer);
+  autoLockTimer = null;
+  const min = getAutoLockMin();
+  if (!min) return;
+  const step = Math.min(15000, Math.max(3000, (min * 60000) / 10));
+  autoLockTimer = setInterval(checkAutoLock, step);
+}
+
+function checkAutoLock() {
+  const min = getAutoLockMin();
+  if (!min || autoLocking) return;
+  if (!hasUnlocked()) return;
+  /* 判定依据是时间戳差值而不是 tick 计数：系统休眠、标签页切到后台时定时器都不准，
+     但 Date.now() 的差值永远真实，醒来后第一次检查就能立刻补锁。 */
+  if (Date.now() - lastActivityAt < min * 60000) return;
+  autoLockAll(min);
+}
+
+/* 回到前台立刻补判一次：后台标签页的定时器会被浏览器降频到分钟级，
+   不补这一下，用户切回来可能先看到几秒钟本该已经锁上的内容。 */
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) checkAutoLock();
+});
+
+async function autoLockAll(min) {
+  if (autoLocking) return;
+  autoLocking = true;
+  try {
+    const box = getTokens();
+    const folderIds = Object.keys(box.folder);
+    const noteIds = Object.keys(box.note);
+
+    /* 必须先落盘再撤令牌：顺序反了的话这次保存会撞 403，用户的编辑就白写了 */
+    await ensureSaved();
+
+    /* 归属判断也要赶在清理之前做完：loadTree 一跑，被重新上锁的子树就从 treeData 上消失了，
+       那时再问「当前笔记在不在锁定范围内」已经查不到答案。 */
+    const cur = state.currentNoteId;
+    const inLockedScope = (fid) =>
+      !!fid && folderIds.some((id) => id === fid || isDescendantOf(fid, id));
+    const needCloseEditor = !!cur &&
+      (noteIds.indexOf(cur) !== -1 || inLockedScope(noteFolderOf(cur)));
+    const activeLocked = inLockedScope(state.activeFolder);
+
+    folderIds.forEach((id) => state.expanded.delete(id));
+    /* 笔记缓存整体作废，而不是只挑锁定的那几个文件夹：note 级令牌对应的加密笔记
+       散落在普通文件夹里，逐个挑很容易漏掉，结果就是列表上的 🔓 图标不刷新。
+       全清的代价只是紧接着那一次 loadFolderNotes 重新拉取，可以忽略。 */
+    Object.keys(noteCache).forEach((k) => { delete noteCache[k]; });
+    clearAllTokens();
+
+    /* 闲置这么久，浮层多半是忘了关的。一并收掉，
+       免得上锁后还有一张放大的图或一个浮动工具条浮在上面。 */
+    hideAllFloatBars();
+    closeLightbox();
+    closeModal();
+
+    if (needCloseEditor) closeEditor();
+    await loadTree();
+    if (activeLocked) {
+      /* 当前所在文件夹已被锁上，退回未分组（顺带把面包屑刷新掉） */
+      await selectFolder(null);
+    } else {
+      await loadFolderNotes(state.activeFolder);
+    }
+    syncAutoLockBadge();
+    toast(`已闲置 ${min} 分钟，加密内容已自动重新上锁`, 'success');
+  } catch (e) {
+    /* 常见于 ensureSaved 撞上网络问题。此时令牌还没撤，内容仍是解锁态，
+       下个周期会自动重试；把计时重置一下，免得每隔几秒就弹一次同样的失败提示。 */
+    lastActivityAt = Date.now();
+    toast('自动上锁失败，稍后重试：' + e.message, 'error');
+  } finally {
+    autoLocking = false;
+  }
+}
+
+/* 顶栏入口：设置闲置时长 */
+$('#btnAutoLock').addEventListener('click', () => {
+  const cur = getAutoLockMin();
+  const opts = AUTO_LOCK_OPTIONS.map((m) =>
+    `<option value="${m}"${m === cur ? ' selected' : ''}>${m ? `${m} 分钟` : '关闭（不自动上锁）'}</option>`
+  ).join('');
+  openModal('自动上锁设置', `
+    <label>闲置多久后自动上锁</label>
+    <select id="dlgAutoLock">${opts}</select>
+    <div class="modal-hint">
+      超过该时长没有任何笔记 / 文件夹操作时，本设备上已解锁的加密文件夹与笔记会自动重新上锁，
+      再次查看需要重新输入密码。未保存的编辑会先保存再上锁，不会丢失。
+    </div>
+    <div class="modal-hint">该设置只影响当前设备，默认 ${AUTO_LOCK_DEFAULT_MIN} 分钟。</div>
+  `, () => {
+    setAutoLockMin(parseInt($('#dlgAutoLock').value, 10));
+    closeModal();
+    const m = getAutoLockMin();
+    toast(m ? `已设置为闲置 ${m} 分钟自动上锁` : '已关闭自动上锁', 'success');
+  }, '保存');
+});
 
 /* 解锁后加载被锁文件夹的子树 */
 async function loadChildren(nodeId) {
@@ -1231,6 +1387,7 @@ async function openNote(id) {
       titleEl.value = note.title || '';
       editorEl.innerHTML = note.content || '<p><br></p>';
       stripLegacyCodeLang(editorEl); /* 剥离旧版写入正文的语言标签 */
+      refreshRotatedImages(editorEl); /* 按当前列宽重算旋转图片的排版补偿 */
       hideNoteLockScreen();
       /* 默认只读模式 */
       setEditMode(false);
@@ -1325,6 +1482,7 @@ async function unlockCurrentNote() {
   try {
     const data = await api(`/api/notes/${state.currentNoteId}/unlock`, { method: 'POST', body: { password: pw } });
     addToken('note', state.currentNoteId, data.token);
+    syncAutoLockBadge();
     state.noteLocked = false;
     hideNoteLockScreen();
     /* 刷新所属文件夹的笔记列表，让左侧图标由「🔐 未解锁」变为「📄 + 🔓 已解锁」 */
@@ -1371,12 +1529,14 @@ function setSaveStatus(text, cls) {
 /* 取待保存的正文：编辑期间的临时装饰类（如单元格高亮）不应落库，
    在克隆副本上清理，避免影响用户当前正在编辑的 DOM 与光标。 */
 function editorContentHTML() {
-  if (!editorEl.querySelector('.cell-active, .img-selected, pre .code-lang')) return editorEl.innerHTML;
+  if (!editorEl.querySelector('.cell-active, .img-selected, pre .code-lang, img[data-rot]')) return editorEl.innerHTML;
   const clone = editorEl.cloneNode(true);
   clone.querySelectorAll('.cell-active, .img-selected').forEach((el) => {
     el.classList.remove('cell-active', 'img-selected');
     if (!el.classList.length) el.removeAttribute('class');
   });
+  /* 旋转图片的补偿 margin 依赖当前视口宽度，属派生值：不落库，打开时现算 */
+  clone.querySelectorAll('img[data-rot]').forEach((el) => { el.style.margin = ''; });
   stripLegacyCodeLang(clone);
   return clone.innerHTML;
 }
@@ -1764,34 +1924,51 @@ function showLinkDialog(target) {
   const selectedText = sel && !sel.isCollapsed ? sel.toString() : '';
   const initUrl = target ? target.getAttribute('href') || '' : '';
   const initText = target ? target.textContent : selectedText;
-  /* 有选区时文字由选区决定，不让用户改，避免所见与所得不一致 */
-  const textLocked = !target && !!selectedText;
 
   openModal(target ? '编辑链接' : '插入链接', `
-    <label>链接地址</label>
-    <input type="text" id="dlgUrl" placeholder="example.com 或 https://example.com" value="${esc(initUrl)}">
-    <label>显示文字</label>
-    <input type="text" id="dlgText" placeholder="留空则显示链接地址" value="${esc(initText)}"${textLocked ? ' disabled' : ''}>
-    <div class="modal-hint">${textLocked ? '已选中文字，将直接作为链接文字。' : '可省略 https://，会自动补全。'}</div>
+    <div class="dialog-intro">${target ? '修改链接文字或跳转地址。' : selectedText ? '已带入选中的文字，你仍可在插入前调整。' : '填写显示文字和跳转地址，插入后可点击链接再次编辑。'}</div>
+    <label for="dlgText">显示文字</label>
+    <input type="text" id="dlgText" placeholder="例如：查看项目文档" value="${esc(initText)}" autocomplete="off">
+    <label for="dlgUrl">链接地址</label>
+    <input type="text" id="dlgUrl" placeholder="example.com 或 https://example.com" value="${esc(initUrl)}" inputmode="url" autocomplete="off">
+    <div class="link-options">
+      <label class="check-row"><input type="checkbox" id="dlgNewWindow"${!target || target.getAttribute('target') === '_blank' ? ' checked' : ''}> 在新窗口打开</label>
+      <button type="button" class="text-action" id="dlgPasteUrl">粘贴地址</button>
+    </div>
+    <div class="modal-hint">可省略 https://，系统会自动补全；邮箱地址会自动转为邮件链接。</div>
   `, () => {
     const url = normalizeUrl($('#dlgUrl').value);
-    if (!url) { toast('请输入链接地址', 'error'); return; }
-    const text = (textLocked ? selectedText : $('#dlgText').value.trim()) || url;
+    if (!url) { toast('请输入链接地址', 'error'); $('#dlgUrl').focus(); return; }
+    const text = $('#dlgText').value.trim() || url;
+    const newWindow = $('#dlgNewWindow').checked;
 
     if (target) {
       target.setAttribute('href', url);
-      target.setAttribute('target', '_blank');
-      target.setAttribute('rel', 'noopener noreferrer');
+      if (newWindow) {
+        target.setAttribute('target', '_blank');
+        target.setAttribute('rel', 'noopener noreferrer');
+      } else {
+        target.removeAttribute('target');
+        target.removeAttribute('rel');
+      }
       target.textContent = text;
       markDirty();
     } else {
-      insertHTMLAtCaret(
-        `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(text)}</a>&nbsp;`
-      );
+      const attrs = newWindow ? ' target="_blank" rel="noopener noreferrer"' : '';
+      insertHTMLAtCaret(`<a href="${esc(url)}"${attrs}>${esc(text)}</a>&nbsp;`);
     }
     closeModal();
     hideLinkBubble();
-  }, target ? '保存' : '插入');
+  }, target ? '保存修改' : '插入链接');
+
+  $('#dlgPasteUrl').addEventListener('click', async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) { $('#dlgUrl').value = text.trim(); $('#dlgUrl').focus(); }
+    } catch (_) { toast('无法读取剪贴板，请手动粘贴', 'error'); }
+  });
+  /* 优先让用户输入地址；若已有地址则从显示文字开始修改 */
+  setTimeout(() => (initUrl ? $('#dlgText') : $('#dlgUrl')).focus(), 70);
 }
 
 $('#btnLink').addEventListener('click', () => showLinkDialog(currentLinkEl()));
@@ -1903,42 +2080,62 @@ function currentPreEl() {
   return pre && editorEl.contains(pre) ? pre : null;
 }
 
-/* target 有值时是修改已有代码块的语言，否则是新建 */
+/* target 有值时可同时修改代码内容与语言，否则是新建 */
 function showCodeDialog(target) {
   if (!ensureEditableForFormat()) return;
   const sel = window.getSelection();
   const selected = !target && sel && !sel.isCollapsed ? sel.toString() : '';
   const initLang = target ? target.getAttribute('data-lang') || '' : '';
+  const initCode = target ? target.textContent : selected;
 
-  openModal(target ? '修改代码语言' : '插入代码块', `
-    <label>编程语言（可留空）</label>
-    <input type="text" id="dlgLang" placeholder="如 javascript" value="${esc(initLang)}">
+  openModal(target ? '编辑代码块' : '插入代码块', `
+    <div class="dialog-intro">${target ? '在一个窗口里修改代码内容和语言。' : selected ? '已将选中文字带入代码编辑区。' : '先粘贴或输入代码，再选择语言。'}</div>
+    <label for="dlgCode">代码内容</label>
+    <textarea id="dlgCode" class="code-input" rows="10" placeholder="在这里输入或粘贴代码…" spellcheck="false">${esc(initCode)}</textarea>
+    <div class="field-title-row"><label for="dlgLang">语言</label><button type="button" class="text-action" id="dlgClearLang">设为纯文本</button></div>
+    <input type="text" id="dlgLang" placeholder="搜索或输入语言，如 javascript" value="${esc(initLang)}" autocomplete="off">
     <div class="lang-chips" id="langChips">
       ${CODE_LANGS.map((l) => `<button type="button" class="lang-chip${l === initLang ? ' on' : ''}" data-lang="${l}">${l}</button>`).join('')}
     </div>
-    <div class="modal-hint">代码块内回车换行、Tab 缩进；语言标签仅用于展示，不会写入正文。</div>
+    <div class="modal-hint">编辑区支持 Tab 缩进；插入后，代码块工具条仍可复制、修改或退出代码块。</div>
   `, () => {
-    const lang = $('#dlgLang').value.trim();
+    const lang = $('#dlgLang').value.trim().toLowerCase();
+    const code = $('#dlgCode').value;
+    if (!code.trim()) { toast('请输入代码内容', 'error'); $('#dlgCode').focus(); return; }
     if (target) {
+      target.textContent = code;
       target.setAttribute('data-lang', lang);
       markDirty();
+      showCodeBar(target);
     } else {
-      /* selected 已由 esc 转义，保证 <div> 这类内容按字面量显示 */
-      insertHTMLAtCaret(`<pre data-lang="${esc(lang)}">${esc(selected)}</pre><p><br></p>`);
+      insertHTMLAtCaret(`<pre data-lang="${esc(lang)}">${esc(code)}</pre><p><br></p>`);
     }
     closeModal();
     hideCodeBar();
-  }, target ? '保存' : '插入');
+  }, target ? '保存代码' : '插入代码');
 
-  /* 芯片与输入框双向联动：再点一次已选中的芯片可取消 */
+  const langInput = $('#dlgLang');
+  const syncLangChips = () => {
+    const value = langInput.value.trim().toLowerCase();
+    $('#langChips').querySelectorAll('.lang-chip').forEach((c) => c.classList.toggle('on', c.dataset.lang === value));
+  };
   $('#langChips').addEventListener('click', (e) => {
     const chip = e.target.closest('.lang-chip');
     if (!chip) return;
-    const input = $('#dlgLang');
-    const picked = input.value.trim() === chip.dataset.lang;
-    input.value = picked ? '' : chip.dataset.lang;
-    $('#langChips').querySelectorAll('.lang-chip').forEach((c) => c.classList.toggle('on', !picked && c === chip));
+    langInput.value = langInput.value.trim() === chip.dataset.lang ? '' : chip.dataset.lang;
+    syncLangChips();
   });
+  langInput.addEventListener('input', syncLangChips);
+  $('#dlgClearLang').addEventListener('click', () => { langInput.value = ''; syncLangChips(); });
+  $('#dlgCode').addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+    e.preventDefault();
+    const ta = e.currentTarget;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    ta.setRangeText('  ', start, end, 'end');
+  });
+  setTimeout(() => $('#dlgCode').focus(), 70);
 }
 
 /* 清理历史数据：早期版本把语言标签写进了 DOM，现在改由 CSS ::before 渲染，
@@ -2049,52 +2246,78 @@ function showTableDialog() {
   for (let r = 1; r <= GRID_MAX_ROWS; r++) {
     cellsHTML += '<div class="grid-row">';
     for (let c = 1; c <= GRID_MAX_COLS; c++) {
-      cellsHTML += `<div class="grid-cell" data-r="${r}" data-c="${c}"></div>`;
+      cellsHTML += `<button type="button" class="grid-cell" data-r="${r}" data-c="${c}" aria-label="${r} 行 ${c} 列"></button>`;
     }
     cellsHTML += '</div>';
   }
 
   openModal('插入表格', `
+    <div class="dialog-intro">拖过网格快速选择尺寸，也可以直接输入行列数。</div>
     <div class="grid-picker">
-      <div class="grid-rows" id="gridRows">${cellsHTML}</div>
-      <div class="grid-label">已选 <b id="gridLabel">3 × 3</b>（行 × 列，首行为表头）</div>
+      <div class="grid-rows" id="gridRows" role="grid">${cellsHTML}</div>
+      <div class="grid-label">当前尺寸 <b id="gridLabel">3 × 3</b></div>
     </div>
-    <div class="modal-hint">在网格上滑动选择尺寸，点击即插入；表格内 Tab / Shift+Tab 可切换单元格。</div>
-  `, () => { insertTable(rows, cols); closeModal(); }, '插入');
+    <div class="table-size-fields">
+      <label>行数<input type="number" id="dlgRows" min="1" max="30" value="3"></label>
+      <span>×</span>
+      <label>列数<input type="number" id="dlgCols" min="1" max="12" value="3"></label>
+    </div>
+    <label class="check-row table-header-option"><input type="checkbox" id="dlgHeader" checked> 首行作为表头</label>
+    <div class="modal-hint">插入后将自动定位到第一个单元格；按 Tab / Shift+Tab 可前后移动，最后一格按 Tab 会新增一行。</div>
+  `, () => {
+    rows = Math.max(1, Math.min(30, parseInt($('#dlgRows').value, 10) || 1));
+    cols = Math.max(1, Math.min(12, parseInt($('#dlgCols').value, 10) || 1));
+    insertTable(rows, cols, $('#dlgHeader').checked);
+    closeModal();
+  }, '插入表格');
 
   const grid = $('#gridRows');
   const label = $('#gridLabel');
-  const paint = (r, c) => {
-    rows = r; cols = c;
-    label.textContent = `${r} × ${c}`;
+  const rowsInput = $('#dlgRows');
+  const colsInput = $('#dlgCols');
+  const paint = (r, c, syncInputs = true) => {
+    rows = Math.max(1, Math.min(30, r));
+    cols = Math.max(1, Math.min(12, c));
+    label.textContent = `${rows} × ${cols}`;
+    if (syncInputs) { rowsInput.value = rows; colsInput.value = cols; }
     grid.querySelectorAll('.grid-cell').forEach((cell) => {
-      cell.classList.toggle('on', +cell.dataset.r <= r && +cell.dataset.c <= c);
+      cell.classList.toggle('on', +cell.dataset.r <= rows && +cell.dataset.c <= cols);
     });
   };
-  grid.addEventListener('mouseover', (e) => {
+  grid.addEventListener('pointerover', (e) => {
     const cell = e.target.closest('.grid-cell');
     if (cell) paint(+cell.dataset.r, +cell.dataset.c);
   });
   grid.addEventListener('click', (e) => {
     const cell = e.target.closest('.grid-cell');
     if (!cell) return;
-    insertTable(+cell.dataset.r, +cell.dataset.c);
+    paint(+cell.dataset.r, +cell.dataset.c);
+    insertTable(rows, cols, $('#dlgHeader').checked);
     closeModal();
   });
+  [rowsInput, colsInput].forEach((input) => input.addEventListener('input', () => {
+    paint(parseInt(rowsInput.value, 10) || 1, parseInt(colsInput.value, 10) || 1, false);
+  }));
   paint(rows, cols);
 }
 
-function insertTable(rows, cols) {
-  let html = '<table><tbody><tr>';
-  for (let c = 0; c < cols; c++) html += '<th>表头' + (c + 1) + '</th>';
-  html += '</tr>';
-  for (let r = 1; r < rows; r++) {
+function insertTable(rows, cols, withHeader = true) {
+  let html = '<table><tbody>';
+  for (let r = 0; r < rows; r++) {
     html += '<tr>';
-    for (let c = 0; c < cols; c++) html += '<td><br></td>';
+    const tag = withHeader && r === 0 ? 'th' : 'td';
+    for (let c = 0; c < cols; c++) html += `<${tag}>${tag === 'th' ? '表头' + (c + 1) : '<br>'}</${tag}>`;
     html += '</tr>';
   }
   html += '</tbody></table><p><br></p>';
-  insertHTMLAtCaret(html);
+  if (!insertHTMLAtCaret(html)) return;
+  /* 插入后直接落到第一个单元格，减少再次点击定位的动作 */
+  const tables = editorEl.querySelectorAll('table');
+  const table = tables[tables.length - 1];
+  if (table && table.rows[0] && table.rows[0].cells[0]) {
+    focusCell(table.rows[0].cells[0]);
+    showTableBar(table.rows[0].cells[0]);
+  }
 }
 
 /* ---------- 表格单元格导航与工具条 ---------- */
@@ -2348,9 +2571,87 @@ function syncImageOverlay() {
 function setImageWidth(img, px) {
   img.style.width = px ? px + 'px' : '';
   img.style.maxWidth = px ? '100%' : '';
+  applyRotLayout(img); /* 尺寸变了，旋转的排版补偿要跟着重算 */
   if (!img.getAttribute('style')) img.removeAttribute('style');
   markDirty();
 }
+
+/* ---------- 图片旋转（90° 步进） ----------
+   服务端只把上传的字节原样落盘、没有图像处理能力，所以旋转走前端 CSS transform，
+   不改动原图文件（也就不会因反复重编码掉画质）。
+   角度写在 data-rot 属性 + 内联 transform 上：保存前 editorContentHTML() 会剥离临时 class，
+   状态放 class 里会丢，必须落在属性和内联样式上才能跟着正文一起持久化。 */
+
+function getImageRot(img) {
+  const n = parseInt(img.dataset.rot || '0', 10);
+  return Number.isFinite(n) ? ((n % 360) + 360) % 360 : 0;
+}
+
+/* 元素的内容宽度（clientWidth 含 padding，要扣掉才是真正的可用列宽） */
+function contentWidthOf(el) {
+  const cs = getComputedStyle(el);
+  return el.clientWidth - parseFloat(cs.paddingLeft || 0) - parseFloat(cs.paddingRight || 0);
+}
+
+/* transform 是排版之后的视觉变换，不改变布局盒子：
+   90°/270° 时视觉宽高与布局宽高互换，排版却仍按原尺寸留位，
+   于是图片会横向溢出正文列、竖向压住相邻文字。
+   这里把宽高差值摊成上下左右 margin 补回排版空间（负值表示该收紧）。 */
+function applyRotLayout(img) {
+  const rot = getImageRot(img);
+  if (!rot) {
+    img.style.transform = '';
+    img.style.margin = '';
+    return;
+  }
+  img.style.transform = `rotate(${rot}deg)`;
+  if (rot === 180) { img.style.margin = ''; return; } /* 180° 宽高不变，无需补偿 */
+  const w = img.offsetWidth;
+  const h = img.offsetHeight;
+  img.style.margin = `${Math.round((w - h) / 2)}px ${Math.round((h - w) / 2)}px`;
+}
+
+/* 竖转（90°/270°）后视觉宽度等于渲染高度，超出当前列宽就按比例收窄
+   （max-width 只约束布局宽度，管不到 transform 之后的视觉宽度） */
+function clampRotatedWidth(img) {
+  const rot = getImageRot(img);
+  if (rot !== 90 && rot !== 270) return;
+  const limit = contentWidthOf(img.parentElement || editorEl);
+  const h = img.offsetHeight;
+  if (limit > 80 && h > limit) {
+    img.style.width = Math.max(60, Math.round(img.offsetWidth * limit / h)) + 'px';
+    img.style.maxWidth = '100%';
+  }
+}
+
+function rotateImage(img, delta) {
+  const rot = (getImageRot(img) + delta + 360) % 360;
+  if (rot) img.dataset.rot = String(rot);
+  else delete img.dataset.rot;
+  clampRotatedWidth(img);
+  applyRotLayout(img);
+  if (!img.getAttribute('style')) img.removeAttribute('style');
+  markDirty();
+}
+
+/* 正文渲染后按当前列宽重算补偿：保存时的窗口宽度可能和现在不同（比如换到手机看） */
+function refreshRotatedImages(root) {
+  root.querySelectorAll('img[data-rot]').forEach((img) => {
+    const settle = () => { clampRotatedWidth(img); applyRotLayout(img); };
+    if (img.complete && img.naturalWidth) settle();
+    else img.addEventListener('load', settle, { once: true });
+  });
+}
+
+/* 窗口尺寸变化（旋转设备 / 拖拽窗口）时按新列宽重算，避免补偿失真 */
+let rotResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(rotResizeTimer);
+  rotResizeTimer = setTimeout(() => {
+    rotResizeTimer = null;
+    if (state.currentNoteId) refreshRotatedImages(editorEl);
+  }, 200);
+});
 
 /* 编辑态点击图片弹出工具条；只读态点击直接放大预览 */
 editorEl.addEventListener('click', (e) => {
@@ -2376,6 +2677,11 @@ imageBar.addEventListener('click', (e) => {
       setImageWidth(activeImage, 0);
       syncImageOverlay();
       break;
+    case 'rotl':
+    case 'rotr':
+      rotateImage(activeImage, act === 'rotl' ? -90 : 90);
+      syncImageOverlay();
+      break;
     case 'zoom':
       openLightbox(activeImage);
       break;
@@ -2397,11 +2703,14 @@ imgResizeHandle.addEventListener('mousedown', (e) => {
   e.stopPropagation();
   const img = activeImage;
   const startX = e.clientX;
-  const startW = img.getBoundingClientRect().width;
+  /* 用 offsetWidth 而非 getBoundingClientRect()：后者返回旋转后的外接矩形，
+     图片竖转时宽高互换，拿它当基准会导致按下瞬间宽度跳变 */
+  const startW = img.offsetWidth;
   const onMove = (ev) => {
     const w = Math.max(60, Math.round(startW + ev.clientX - startX));
     img.style.width = w + 'px';
     img.style.maxWidth = '100%';
+    applyRotLayout(img);
     syncImageOverlay();
   };
   const onUp = () => {
@@ -2416,12 +2725,22 @@ imgResizeHandle.addEventListener('mousedown', (e) => {
 /* 放大浮窗：点击遮罩或 Esc 关闭 */
 const imgLightbox = $('#imgLightbox');
 function openLightbox(img) {
-  $('#imgLightboxPic').src = img.currentSrc || img.src;
+  const pic = $('#imgLightboxPic');
+  pic.src = img.currentSrc || img.src;
+  /* 浮窗里同步正文中的旋转角；90°/270° 视觉宽高互换，
+     可视范围的限制条件也要跟着互换，否则会超出屏幕被裁掉 */
+  const rot = getImageRot(img);
+  const swap = rot === 90 || rot === 270;
+  pic.style.transform = rot ? `rotate(${rot}deg)` : '';
+  pic.style.maxWidth = swap ? '92vh' : '';
+  pic.style.maxHeight = swap ? '96vw' : '';
   imgLightbox.classList.remove('hidden');
 }
 function closeLightbox() {
   imgLightbox.classList.add('hidden');
-  $('#imgLightboxPic').removeAttribute('src');
+  const pic = $('#imgLightboxPic');
+  pic.removeAttribute('src');
+  pic.removeAttribute('style');
 }
 imgLightbox.addEventListener('click', closeLightbox);
 document.addEventListener('keydown', (e) => {
@@ -2716,6 +3035,7 @@ async function promptUnlock(node) {
     try {
       const data = await api(`/api/folders/${node.id}/unlock`, { method: 'POST', body: { password: pw } });
       addToken('folder', node.id, data.token);
+      syncAutoLockBadge();
       closeModal();
       await loadChildren(node.id);
       await selectFolder(node.id);
@@ -2920,4 +3240,9 @@ $('#btnSearch').addEventListener('click', async () => {
   } catch (e) {
     toast('加载失败：' + e.message, 'error');
   }
+
+  /* 放在 try 之外：即便首屏加载失败，闲置看守也必须照常起来 —— 
+     这次失败不代表本会话没有已解锁内容，漏掉看守等于漏掉一次该有的上锁。 */
+  restartAutoLockWatch();
+  syncAutoLockBadge();
 })();

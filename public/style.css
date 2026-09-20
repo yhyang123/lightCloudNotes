@@ -54,7 +54,9 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
   display: flex; align-items: center; justify-content: space-between; padding: 0 16px; flex-shrink: 0;
 }
 .brand { font-weight: 700; font-size: 16px; }
-
+.topbar-actions { display: flex; align-items: center; gap: 6px; }
+/* 自动上锁按钮在会话内存在已解锁内容时点亮，提示「有东西正处于解锁态」 */
+#btnAutoLock.armed { color: var(--primary); border-color: var(--primary); }
 /* ---------- 侧栏 ---------- */
 .sidebar {
   width: 280px; min-width: 200px; max-width: 520px; background: var(--panel); border-right: 1px solid var(--border);
@@ -241,7 +243,7 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
 /* ---------- 通用浮动工具条（链接 / 表格 / 代码块） ---------- */
 .float-bar {
   position: absolute; z-index: 160; background: #2b3138; border-radius: 8px;
-  padding: 5px 8px; display: flex; align-items: center; gap: 3px;
+  padding: 5px 8px; display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
   box-shadow: 0 4px 16px rgba(0,0,0,.25); animation: fadeIn .12s; max-width: 420px;
 }
 .float-bar .sb-btn { white-space: nowrap; }
@@ -253,16 +255,27 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
 }
 
 /* ---------- 表格网格选择器 ---------- */
-.grid-picker { user-select: none; }
-.grid-rows { display: flex; flex-direction: column; gap: 3px; }
-.grid-row { display: flex; gap: 3px; }
+.grid-picker { user-select: none; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); }
+.grid-rows { display: flex; flex-direction: column; gap: 4px; width: max-content; }
+.grid-row { display: flex; gap: 4px; }
 .grid-cell {
-  width: 18px; height: 18px; border: 1px solid var(--border); border-radius: 3px;
-  background: var(--panel); cursor: pointer; transition: background .06s, border-color .06s;
+  appearance: none; padding: 0; width: 22px; height: 22px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--panel); cursor: pointer; transition: transform .08s, background .08s, border-color .08s;
 }
-.grid-cell.on { background: var(--sel); border-color: var(--primary); }
+.grid-cell:hover { transform: scale(1.06); }
+.grid-cell:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.grid-cell.on { background: var(--sel); border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
 .grid-label { font-size: 13px; color: var(--text2); margin-top: 10px; }
-.grid-label b { color: var(--primary); }
+.grid-label b { color: var(--primary); font-size: 15px; }
+.table-size-fields { display: flex; align-items: flex-end; gap: 10px; margin-top: 12px; }
+.table-size-fields label { flex: 1; margin: 0; }
+.table-size-fields span { color: var(--text2); padding-bottom: 9px; }
+.table-size-fields input[type=number] {
+  width: 100%; margin-top: 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); background: var(--panel); outline: none;
+}
+.table-size-fields input[type=number]:focus { border-color: var(--primary); }
+.table-header-option { margin-top: 12px !important; }
 
 /* ---------- 代码语言快捷选择 ---------- */
 .lang-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
@@ -272,6 +285,20 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
 }
 .lang-chip:hover { border-color: var(--primary); color: var(--primary); background: var(--sel); }
 .lang-chip.on { border-color: var(--primary); color: var(--primary); background: var(--sel); font-weight: 600; }
+.code-input {
+  width: 100%; resize: vertical; min-height: 190px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: #0d1b2a; color: #d6e2f0; outline: none; font: 13px/1.6 "SF Mono", Menlo, Consolas, monospace; tab-size: 2;
+}
+.code-input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px var(--sel); }
+.field-title-row, .link-options { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.field-title-row label { margin-bottom: 4px; }
+.dialog-intro { padding: 9px 11px; border-radius: 7px; background: var(--sel); color: var(--text2); font-size: 12px; line-height: 1.55; }
+.check-row { display: inline-flex !important; align-items: center; gap: 7px; cursor: pointer; color: var(--text) !important; }
+.check-row input { margin: 0; accent-color: var(--primary); }
+.link-options { margin-top: 10px; }
+.link-options .check-row { margin: 0; }
+.text-action { border: 0; padding: 3px 0; background: transparent; color: var(--primary); cursor: pointer; font-size: 12px; }
+.text-action:hover { text-decoration: underline; }
 
 .editor-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; min-width: 0; }
 .editor-content {
@@ -389,9 +416,9 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
 .modal-body label { display: block; font-size: 13px; color: var(--text2); margin: 10px 0 4px; }
 .modal-body input[type=text], .modal-body input[type=password], .modal-body select {
   width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
-  font-size: 14px; outline: none;
+  font-size: 14px; outline: none; color: var(--text); background: var(--panel);
 }
-.modal-body input:focus, .modal-body select:focus { border-color: var(--primary); }
+.modal-body input:focus, .modal-body select:focus, .modal-body textarea:focus { border-color: var(--primary); }
 .modal-hint { font-size: 12px; color: var(--text2); margin-top: 8px; line-height: 1.5; }
 .modal-warn { background: var(--warn-bg); border-radius: 6px; padding: 8px 10px; font-size: 12px; margin-top: 8px; }
 .move-target {
@@ -548,6 +575,8 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
     padding-right: max(12px, env(safe-area-inset-right));
   }
   .brand { font-size: 15px; }
+  /* 顶栏横向空间紧张：自动上锁只留 🔒 图标，具体时长进设置弹窗看 */
+  #autoLockLabel { display: none; }
 
   /* 侧栏脱离文档流，变为覆盖式抽屉 */
   .sidebar {
