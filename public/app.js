@@ -1293,7 +1293,7 @@ async function selectFolder(folderId, forceExpand = true) {
   await loadFolderNotes(folderId);
 }
 
-async function createNote(folderId) {
+async function createNote(folderId, format = 'html', content = null, title = '无标题笔记') {
   try {
     if (folderId) {
       const node = findNode(folderId);
@@ -1301,7 +1301,7 @@ async function createNote(folderId) {
     }
     const data = await api('/api/notes', {
       method: 'POST',
-      body: { folderId: folderId || null, title: '无标题笔记', content: '<p><br></p>' },
+      body: { folderId: folderId || null, title, format, content: content === null ? (format === 'markdown' ? '' : '<p><br></p>') : content },
     });
     /* 立刻登记归属，避免后续上锁/移动时反查不到所属文件夹 */
     rememberOwner(data.id, folderId);
@@ -1356,6 +1356,97 @@ function closeEditor() {
 /* ================= 编辑器 ================= */
 const editorEl = $('#editor');
 const titleEl = $('#noteTitle');
+const markdownSource = $('#markdownSource');
+$('#btnMarkdownImage').addEventListener('click', () => $('#fileInput').click());
+markdownSource.addEventListener('paste', (e) => {
+  const item = Array.from(e.clipboardData?.items || []).find((entry) => entry.type.startsWith('image/'));
+  if (!item || !state.editMode) return;
+  e.preventDefault();
+  const file = item.getAsFile();
+  if (file) uploadImage(file);
+});
+markdownSource.addEventListener('drop', async (e) => {
+  const files = Array.from(e.dataTransfer?.files || []).filter((file) => file.type.startsWith('image/'));
+  if (!files.length || !state.editMode) return;
+  e.preventDefault();
+  for (const file of files) await uploadImage(file);
+});
+state.noteFormat = 'html';
+state.markdownPreview = true;
+state.toolbarCollapsed = getLayout().toolbarCollapsed === true;
+const btnToggleToolbar = $('#btnToggleToolbar');
+
+function syncToolbarVisibility() {
+  const available = state.noteFormat === 'html' && !state.noteLocked;
+  const expanded = available && !state.toolbarCollapsed;
+  $('#toolbar').classList.toggle('hidden', !expanded);
+  btnToggleToolbar.classList.toggle('hidden', !available);
+  btnToggleToolbar.textContent = state.toolbarCollapsed ? '⌄ 展开工具栏' : '⌃ 收起工具栏';
+  btnToggleToolbar.title = state.toolbarCollapsed ? '展开格式工具栏' : '收起格式工具栏';
+  btnToggleToolbar.setAttribute('aria-expanded', String(expanded));
+}
+
+btnToggleToolbar.addEventListener('mousedown', (event) => {
+  event.preventDefault();
+  saveRange();
+});
+btnToggleToolbar.addEventListener('click', () => {
+  state.toolbarCollapsed = !state.toolbarCollapsed;
+  try { setLayout({ toolbarCollapsed: state.toolbarCollapsed }); } catch (e) {}
+  hideAllFloatBars();
+  syncToolbarVisibility();
+});
+syncToolbarVisibility();
+
+function updateMarkdownPreview() {
+  if (state.noteFormat !== 'markdown' || state.noteLocked) return;
+  editorEl.innerHTML = renderMarkdown(markdownSource.value);
+  editorEl.querySelectorAll('pre > code[class]').forEach((code) => {
+    const language = Array.from(code.classList).find((name) => name.startsWith('language-'));
+    if (language) code.parentElement.dataset.lang = language.slice(9);
+  });
+}
+
+function syncMarkdownUI() {
+  const markdown = state.noteFormat === 'markdown';
+  const editing = markdown && state.editMode && !state.noteLocked;
+  syncToolbarVisibility();
+  $('#markdownTools').classList.toggle('hidden', !editing);
+  markdownSource.classList.toggle('hidden', !editing);
+  $('#markdownWorkspace').classList.toggle('split', editing && state.markdownPreview);
+  editorEl.classList.toggle('hidden', state.noteLocked || (editing && !state.markdownPreview));
+  $('#btnExportMarkdown').classList.toggle('hidden', !markdown || state.noteLocked);
+}
+
+markdownSource.addEventListener('input', () => {
+  markDirty();
+  updateMarkdownPreview();
+});
+markdownSource.addEventListener('keydown', (e) => {
+  if (e.key !== 'Tab' || !state.editMode) return;
+  e.preventDefault();
+  markdownSource.setRangeText('  ', markdownSource.selectionStart, markdownSource.selectionEnd, 'end');
+  markDirty();
+  updateMarkdownPreview();
+});
+$('#btnMarkdownPreview').addEventListener('click', () => {
+  state.markdownPreview = !state.markdownPreview;
+  $('#btnMarkdownPreview').textContent = state.markdownPreview ? '预览：开' : '预览：关';
+  $('#btnMarkdownPreview').setAttribute('aria-pressed', String(state.markdownPreview));
+  syncMarkdownUI();
+});
+$('#btnMarkdownHelp').addEventListener('click', () => {
+  openModal('Markdown 快捷语法', '<p>在当前富文本正文中输入即可自动转换，无需切换笔记格式。</p><p>行首输入 <code>#</code> / <code>##</code> / <code>###</code> 后按空格：标题；<code>&gt;</code> 后按空格：引用；<code>-</code> / <code>*</code> / <code>+</code> 后按空格：无序列表；<code>1.</code> 后按空格：有序列表。</p><p>独立一行输入三个反引号（可跟语言名，如 javascript）后按回车：代码块；<code>---</code> 或 <code>***</code> 后按回车：分隔线。</p><p>输入 <code>**文字**</code>：加粗；<code>*文字*</code>：斜体；<code>~~文字~~</code>：删除线；<code>`代码`</code>：行内代码。输入结束标记后自动转换。</p><p>粘贴、输入法组合输入、代码块及表格内不会触发。转换后可用 Ctrl / ⌘ + Z 撤销。</p>', closeModal, '知道了');
+});
+$('#btnExportMarkdown').addEventListener('click', () => {
+  if (state.noteFormat !== 'markdown' || state.noteLocked) return;
+  const url = URL.createObjectURL(new Blob([markdownSource.value], { type: 'text/markdown;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = (titleEl.value || '笔记').replace(/[\\/:*?"<>|]/g, '_') + '.md';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
 
 async function openNote(id) {
   if ((state.dirty || state.titleDirty) && state.currentNoteId && state.currentNoteId !== id) {
@@ -1365,6 +1456,11 @@ async function openNote(id) {
   try {
     const data = await api(`/api/notes/${id}`);
     const note = data.note;
+    if (note.format && !['html', 'markdown'].includes(note.format)) throw new Error('不支持的笔记格式');
+    state.dirty = false;
+    state.titleDirty = false;
+    state.noteFormat = note.format || 'html';
+    markdownSource.value = note.noteLocked ? '' : (state.noteFormat === 'markdown' ? note.content || '' : '');
     state.currentNoteId = id;
     state.suppressSave = true;
     /* 换笔记时旧选区与浮动条都失效了，必须清干净再渲染新内容 */
@@ -1381,11 +1477,12 @@ async function openNote(id) {
       state.editMode = false;
       titleEl.value = note.title || '';
       editorEl.innerHTML = '<p><br></p>';
+      syncMarkdownUI();
       showNoteLockScreen(note);
     } else {
       state.noteLocked = false;
       titleEl.value = note.title || '';
-      editorEl.innerHTML = note.content || '<p><br></p>';
+      editorEl.innerHTML = state.noteFormat === 'markdown' ? renderMarkdown(markdownSource.value) : note.content || '<p><br></p>';
       stripLegacyCodeLang(editorEl); /* 剥离旧版写入正文的语言标签 */
       refreshRotatedImages(editorEl); /* 按当前列宽重算旋转图片的排版补偿 */
       hideNoteLockScreen();
@@ -1409,8 +1506,10 @@ const btnToggleEdit = $('#btnToggleEdit');
 
 function setEditMode(on) {
   state.editMode = on;
-  editorEl.contentEditable = on ? 'true' : 'false';
-  editorEl.classList.toggle('readonly', !on);
+  editorEl.contentEditable = on && state.noteFormat !== 'markdown' ? 'true' : 'false';
+  editorEl.classList.toggle('readonly', !on || state.noteFormat === 'markdown');
+  updateMarkdownPreview();
+  syncMarkdownUI();
   /* 标题始终可修改（只读模式也可重命名） */
   titleEl.readOnly = false;
   $('#toolbar').classList.toggle('disabled-toolbar', !on);
@@ -1435,7 +1534,7 @@ btnToggleEdit.addEventListener('click', async () => {
   } else {
     /* 只读 → 编辑 */
     setEditMode(true);
-    editorEl.focus();
+    (state.noteFormat === 'markdown' ? markdownSource : editorEl).focus();
   }
 });
 function syncReadonlyBadge() {
@@ -1529,6 +1628,7 @@ function setSaveStatus(text, cls) {
 /* 取待保存的正文：编辑期间的临时装饰类（如单元格高亮）不应落库，
    在克隆副本上清理，避免影响用户当前正在编辑的 DOM 与光标。 */
 function editorContentHTML() {
+  if (state.noteFormat === 'markdown') return markdownSource.value;
   if (!editorEl.querySelector('.cell-active, .img-selected, pre .code-lang, img[data-rot]')) return editorEl.innerHTML;
   const clone = editorEl.cloneNode(true);
   clone.querySelectorAll('.cell-active, .img-selected').forEach((el) => {
@@ -1553,8 +1653,10 @@ async function saveNow() {
     if (savingTitle) body.title = titleEl.value.trim() || '无标题笔记';
     if (savingContent) body.content = editorContentHTML();
     await api(`/api/notes/${noteId}`, { method: 'PATCH', body });
-    state.dirty = false;
-    state.titleDirty = false;
+    if (state.currentNoteId !== noteId) return;
+    if (savingContent && body.content === editorContentHTML()) state.dirty = false;
+    if (savingTitle && body.title === (titleEl.value.trim() || '无标题笔记')) state.titleDirty = false;
+    if (state.dirty || state.titleDirty) scheduleSave();
     setSaveStatus('✓ 已自动保存', 'saved');
     /* 更新树内笔记行的标题与时间（在任一已加载的文件夹缓存中查找） */
     let touched = false;
@@ -1603,6 +1705,12 @@ async function ensureSaved() {
 
 /* 输入监听 */
 editorEl.addEventListener('input', markDirty);
+installMarkdownShortcuts(editorEl, () => state.editMode && !state.noteLocked && !state.suppressSave && state.noteFormat === 'html', () => {
+  saveRange();
+  syncBlockType();
+  syncContextBars();
+  markDirty();
+});
 titleEl.addEventListener('input', markTitleDirty);
 /* 标题失焦 / 回车立即保存 */
 titleEl.addEventListener('blur', () => { if (state.titleDirty) saveNow(); });
@@ -1694,6 +1802,7 @@ function insertHTMLAtCaret(html) {
    所以格式化前先自动切入编辑模式。 */
 function ensureEditableForFormat() {
   if (!state.currentNoteId || state.noteLocked) return false;
+  if (state.noteFormat === 'markdown') return false;
   if (state.editMode) return true;
   saveRange();
   setEditMode(true);
@@ -1844,6 +1953,7 @@ function hideBubble() { selBubble.classList.add('hidden'); }
 
 document.addEventListener('selectionchange', () => {
   clearTimeout(bubbleTimer);
+  if (state.noteFormat === 'markdown') { hideBubble(); hideCodeBar(); hideTableBar(); return; }
   saveRange(); /* 随选区变化持续记录，供工具栏 / 气泡命令恢复使用 */
   syncContextBars(); /* 同步代码块 / 表格上下文工具条 */
   syncBlockType(); /* 让段落类型下拉框始终反映光标所在块 */
@@ -2007,7 +2117,7 @@ function placeFloatBar(bar, rect) {
 editorEl.addEventListener('click', (e) => {
   const a = e.target.closest('a');
   if (!a || !editorEl.contains(a)) { hideLinkBubble(); return; }
-  if (!state.editMode) return;
+  if (!state.editMode || state.noteFormat === 'markdown') return;
   e.preventDefault();
   showLinkBubble(a);
 });
@@ -2161,7 +2271,7 @@ function showCodeBar(pre) {
 /* 光标移进 / 移出代码块时同步显隐工具条 */
 function syncCodeBar() {
   const pre = currentPreEl();
-  if (!pre || !state.editMode) { hideCodeBar(); return; }
+  if (!pre || !state.editMode || state.noteFormat === 'markdown') { hideCodeBar(); return; }
   if (pre !== activePre) showCodeBar(pre);
 }
 
@@ -2387,7 +2497,7 @@ function showTableBar(cell) {
 /* 光标进出表格时同步显隐工具条 */
 function syncTableBar() {
   const cell = currentCellEl();
-  if (!cell || !state.editMode) { hideTableBar(); return; }
+  if (!cell || !state.editMode || state.noteFormat === 'markdown') { hideTableBar(); return; }
   if (cell !== activeCell) showTableBar(cell);
 }
 
@@ -2489,6 +2599,11 @@ fileInput.addEventListener('change', async () => {
 });
 
 async function uploadImage(file) {
+  if (!state.currentNoteId || state.noteLocked || !state.editMode) return;
+  const noteId = state.currentNoteId;
+  const format = state.noteFormat;
+  const start = markdownSource.selectionStart;
+  const end = markdownSource.selectionEnd;
   if (!file.type.startsWith('image/')) { toast('仅支持图片文件', 'error'); return; }
   if (file.size > 20 * 1024 * 1024) { toast('图片不能超过 20MB', 'error'); return; }
   const fd = new FormData();
@@ -2498,6 +2613,18 @@ async function uploadImage(file) {
     const res = await fetch('/api/upload', { method: 'POST', body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '上传失败');
+    if (state.currentNoteId !== noteId || !state.editMode) {
+      toast('笔记已切换，图片未插入', 'error');
+      return;
+    }
+    if (format === 'markdown') {
+      const alt = file.name.replace(/[\[\]\\\r\n]/g, '');
+      markdownSource.setRangeText(`\n\n![${alt}](${data.url})\n\n`, start, end, 'end');
+      markdownSource.focus();
+      updateMarkdownPreview();
+      markDirty();
+      return;
+    }
     editorEl.focus();
     /* 默认以缩略图插入：大图收窄到 360px 内，小图保持原尺寸不放大 */
     document.execCommand('insertHTML', false, `<img src="${esc(data.url)}" alt="${esc(file.name)}" style="max-width:min(360px,100%)"><p><br></p>`);
@@ -2511,6 +2638,7 @@ async function uploadImage(file) {
 
 /* 编辑区粘贴图片 / 拖拽图片 */
 editorEl.addEventListener('paste', (e) => {
+  if (state.noteFormat === 'markdown') return;
   const items = e.clipboardData && e.clipboardData.items;
   if (!items) return;
   for (const item of items) {
@@ -2523,6 +2651,7 @@ editorEl.addEventListener('paste', (e) => {
   }
 });
 editorEl.addEventListener('drop', (e) => {
+  if (state.noteFormat === 'markdown') return;
   const files = e.dataTransfer && e.dataTransfer.files;
   if (!files || !files.length) return;
   const imgs = Array.from(files).filter((f) => f.type.startsWith('image/'));
@@ -2658,7 +2787,7 @@ editorEl.addEventListener('click', (e) => {
   const img = e.target.closest('img');
   if (!img || !editorEl.contains(img)) return;
   e.preventDefault();
-  if (!state.editMode) { openLightbox(img); return; }
+  if (!state.editMode || state.noteFormat === 'markdown') { openLightbox(img); return; }
   selectImage(img);
 });
 

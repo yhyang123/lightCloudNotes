@@ -547,6 +547,9 @@ async function handleApi(req, res, pathname) {
   /* ---- 新建笔记 ---- */
   if (method === 'POST' && pathname === '/api/notes') {
     const body = await readJSON(req);
+    if (body.format !== undefined && !['html', 'markdown'].includes(body.format)) {
+      return sendJSON(res, 400, { error: '不支持的笔记格式' });
+    }
     const folderId = body.folderId || null;
     if (folderId) {
       if (!getFolder(folderId)) return sendJSON(res, 404, { error: '文件夹不存在' });
@@ -557,6 +560,7 @@ async function handleApi(req, res, pathname) {
       folderId,
       title: String(body.title || '无标题笔记').slice(0, 200),
       content: typeof body.content === 'string' ? body.content : '',
+      format: body.format || 'html',
       order: headOrder(db.notes.filter((n) => (n.folderId || null) === folderId)),
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -643,6 +647,7 @@ async function handleApi(req, res, pathname) {
       const locked = note.passwordHash && !checkNoteUnlock(note, clientTokens(req));
       /* 永不下发密码字段 */
       const { passwordHash, salt, ...meta } = note;
+      meta.format = note.format || 'html';
       return sendJSON(res, 200, {
         note: locked ? { ...meta, content: null, noteLocked: true, pwHint: note.pwHint || '' } : { ...meta, noteLocked: false },
       });

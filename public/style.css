@@ -301,6 +301,24 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
 .text-action:hover { text-decoration: underline; }
 
 .editor-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; min-width: 0; }
+.markdown-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 24px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.markdown-tools strong { color: var(--primary); font-size: 13px; }
+.markdown-tools span { flex: 1; color: var(--text2); font-size: 12px; }
+.markdown-workspace { min-height: 100%; min-width: 0; }
+.markdown-workspace.split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.markdown-source { display: block; width: 100%; min-height: 65vh; padding: 24px; resize: vertical; border: 0; outline: none; color: var(--text); background: var(--panel); font: 14px/1.8 Menlo, Consolas, monospace; tab-size: 2; }
+.split .markdown-source { border-right: 1px solid var(--border); }
+.split .editor-content { padding: 24px 24px 80px; }
+@media (max-width: 900px) {
+  .markdown-workspace.split { grid-template-columns: minmax(0, 1fr); }
+  .split .markdown-source { border-right: 0; border-bottom: 1px solid var(--border); min-height: 40vh; }
+  .markdown-tools { padding: 8px 12px; }
+}
+@media print {
+  #markdownTools, #markdownSource, #btnMarkdownCopy, #btnExportMarkdown { display: none !important; }
+  #markdownWorkspace { display: block !important; }
+  #markdownWorkspace #editor { display: block !important; }
+}
 .editor-content {
   width: 100%; max-width: 100%; margin: 0; padding: 24px 32px 120px; outline: none;
   min-height: 100%; line-height: 1.75; font-size: 15px; word-break: break-word; overflow-wrap: anywhere;
@@ -729,7 +747,7 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
   .editor-head-top, .toolbar, .editor-foot,
   .float-bar, .sel-bubble, .context-menu, .modal-mask, #toastBox,
   .img-lightbox, .img-resize-handle,
-  #btnExportPdf, #btnToggleEdit, #noteMeta,
+  #btnExportPdf, #btnToggleEdit, #btnToggleToolbar, #noteMeta,
   .editor-empty {
     display: none !important;
   }

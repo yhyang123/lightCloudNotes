@@ -56,6 +56,8 @@
         <div class="editor-head">
           <input id="noteTitle" class="note-title-input" placeholder="笔记标题" maxlength="200" title="点击可直接修改笔记名称">
           <span id="noteMeta" class="note-meta"></span>
+          <button id="btnToggleToolbar" class="btn ghost sm" type="button" aria-controls="toolbar" aria-expanded="true" title="收起格式工具栏">⌃ 收起工具栏</button>
+          <button id="btnExportMarkdown" class="btn ghost sm hidden">⤓ MD</button>
           <button id="btnExportPdf" class="btn ghost sm" title="导出为 PDF（打开打印对话框后选择「另存为 PDF」）">⤓ PDF</button>
           <button id="btnToggleEdit" class="btn primary sm btn-edit">✏️ 编辑</button>
         </div>
@@ -106,12 +108,22 @@
           <button class="tb" id="btnTable" title="插入表格">▦ 表格</button>
           <button class="tb" id="btnCode" title="插入代码块">&lt;/&gt; 代码</button>
           <button class="tb" id="btnHr" title="分隔线">—</button>
+          <button class="tb" id="btnMarkdownHelp" title="富文本 Markdown 快捷语法">M↓ 快捷语法</button>
           <span class="tb-flex"></span>
           <button class="tb" id="btnUndo" title="撤销 (Ctrl+Z)">↩</button>
           <button class="tb" id="btnRedo" title="重做 (Ctrl+Shift+Z)">↪</button>
         </div>
         <div class="editor-scroll">
+          <div id="markdownTools" class="markdown-tools hidden">
+            <strong>Markdown</strong>
+            <span>源码编辑 · 自动保存</span>
+            <button id="btnMarkdownImage" class="btn ghost sm">插入图片</button>
+            <button id="btnMarkdownPreview" class="btn ghost sm" aria-pressed="true">预览：开</button>
+          </div>
+          <div id="markdownWorkspace" class="markdown-workspace">
+          <textarea id="markdownSource" class="markdown-source hidden" aria-label="Markdown 源码" placeholder="# 标题&#10;&#10;在这里编写 Markdown…" spellcheck="false"></textarea>
           <div id="editor" class="editor-content" contenteditable="true" spellcheck="false"></div>
+          </div>
         </div>
         <div class="editor-foot">
           <span id="saveStatus" class="save-status">就绪</span>
@@ -227,6 +239,10 @@
   <img id="imgLightboxPic" src="" alt="">
 </div>
 
+<script src="/vendor/marked-15.0.12.min.js"></script>
+<script src="/vendor/purify-3.2.7.min.js"></script>
+<script src="/markdown.js"></script>
+<script src="/markdown-shortcuts.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

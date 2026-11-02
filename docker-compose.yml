@@ -2,7 +2,7 @@ services:
   nascloudnote:
     build: .
     # 明确锁定版本号，避免 latest 被后续版本覆盖时行为漂移
-    image: nascloudnote:1.6.0
+    image: nascloudnote:1.7.0
     container_name: nascloudnote
     restart: unless-stopped
     ports:

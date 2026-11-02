@@ -6,3 +6,6 @@ dist
 .workbuddy
 docker-compose.yml
 README.md
+*.tar
+.git
+.tmp-*
