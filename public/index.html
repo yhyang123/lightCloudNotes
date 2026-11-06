@@ -56,17 +56,15 @@
         <div class="editor-head">
           <input id="noteTitle" class="note-title-input" placeholder="笔记标题" maxlength="200" title="点击可直接修改笔记名称">
           <span id="noteMeta" class="note-meta"></span>
+          <div class="editor-actions">
           <button id="btnToggleToolbar" class="btn ghost sm" type="button" aria-controls="toolbar" aria-expanded="true" title="收起格式工具栏">⌃ 收起工具栏</button>
           <button id="btnExportMarkdown" class="btn ghost sm hidden">⤓ MD</button>
           <button id="btnExportPdf" class="btn ghost sm" title="导出为 PDF（打开打印对话框后选择「另存为 PDF」）">⤓ PDF</button>
           <button id="btnToggleEdit" class="btn primary sm btn-edit">✏️ 编辑</button>
+          </div>
         </div>
         <div class="toolbar" id="toolbar">
           <button class="tb" data-cmd="bold" title="加粗 (Ctrl+B)"><b>B</b></button>
-          <button class="tb" data-cmd="italic" title="斜体 (Ctrl+I)"><i>I</i></button>
-          <button class="tb" data-cmd="underline" title="下划线 (Ctrl+U)"><u>U</u></button>
-          <button class="tb" data-cmd="strikeThrough" title="删除线"><s>S</s></button>
-          <span class="tb-sep"></span>
           <select id="blockType" class="tb-select" title="段落类型">
             <option value="p">正文</option>
             <option value="h1">标题 1</option>
@@ -75,6 +73,12 @@
             <option value="blockquote">引用</option>
             <option value="pre">代码块</option>
           </select>
+          <button class="tb toolbar-group-toggle" type="button" aria-controls="textTools" aria-expanded="false">文字⌄</button>
+          <div id="textTools" class="toolbar-panel hidden" role="group" aria-label="文字样式">
+          <button class="tb" data-cmd="italic" title="斜体 (Ctrl+I)"><i>I</i></button>
+          <button class="tb" data-cmd="underline" title="下划线 (Ctrl+U)"><u>U</u></button>
+          <button class="tb" data-cmd="strikeThrough" title="删除线"><s>S</s></button>
+          <span class="tb-sep"></span>
           <select id="fontSize" class="tb-select" title="字体大小">
             <option value="" disabled selected hidden>Aa</option>
             <option value="1">特小</option>
@@ -99,19 +103,24 @@
             <button class="tb color-menu-btn" type="button" title="选择高亮颜色" aria-label="选择高亮颜色" aria-expanded="false">⌄</button>
             <input type="color" id="colorBack" value="#ffe066" class="color-native-input" aria-label="自定义高亮颜色">
           </span>
-          <span class="tb-sep"></span>
+          </div>
+          <button class="tb toolbar-group-toggle" type="button" aria-controls="paragraphTools" aria-expanded="false">段落⌄</button>
+          <div id="paragraphTools" class="toolbar-panel hidden" role="group" aria-label="段落排版">
           <button class="tb" data-cmd="insertUnorderedList" title="无序列表">• 列表</button>
           <button class="tb" data-cmd="insertOrderedList" title="有序列表">1. 列表</button>
-          <span class="tb-sep"></span>
+          </div>
+          <button class="tb" id="btnImage" type="button" title="插入图片" aria-label="插入图片">🖼️</button>
+          <button class="tb toolbar-group-toggle" type="button" aria-controls="insertTools" aria-expanded="false">插入⌄</button>
+          <div id="insertTools" class="toolbar-panel hidden" role="group" aria-label="插入内容">
           <button class="tb" id="btnLink" title="插入链接">🔗</button>
-          <button class="tb" id="btnImage" title="插入图片">🖼️</button>
           <button class="tb" id="btnTable" title="插入表格">▦ 表格</button>
           <button class="tb" id="btnCode" title="插入代码块">&lt;/&gt; 代码</button>
           <button class="tb" id="btnHr" title="分隔线">—</button>
           <button class="tb" id="btnMarkdownHelp" title="富文本 Markdown 快捷语法">M↓ 快捷语法</button>
+          <button class="tb" id="btnRedo" title="重做 (Ctrl+Shift+Z)">↪ 重做</button>
+          </div>
           <span class="tb-flex"></span>
           <button class="tb" id="btnUndo" title="撤销 (Ctrl+Z)">↩</button>
-          <button class="tb" id="btnRedo" title="重做 (Ctrl+Shift+Z)">↪</button>
         </div>
         <div class="editor-scroll">
           <div id="markdownTools" class="markdown-tools hidden">

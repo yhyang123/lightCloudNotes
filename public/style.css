@@ -206,6 +206,8 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
 }
 .note-title-input:focus { border-bottom: 2px solid var(--primary); }
 .note-meta { font-size: 12px; color: var(--text2); white-space: nowrap; }
+.editor-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.crumb { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 工具栏 */
 .toolbar {
@@ -217,6 +219,23 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
   font-size: 13px; color: var(--text); min-width: 30px;
 }
 .tb:hover { background: var(--sel); }
+.toolbar-group-toggle { white-space: nowrap; }
+.toolbar-group-toggle[aria-expanded="true"] { color: var(--primary); background: var(--sel); }
+.toolbar-panel {
+  position: fixed; z-index: 180; display: flex; flex-wrap: wrap;
+  align-items: center; gap: 8px; padding: 12px;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel); box-shadow: 0 8px 28px rgba(0,0,0,.16);
+  overflow: auto; box-sizing: border-box;
+}
+.toolbar-panel .tb { min-width: 40px; min-height: 40px; background: var(--bg); }
+.toolbar-panel .tb-select { max-width: 100%; min-height: 40px; }
+.toolbar-panel .tb-sep { display: none; }
+@media (max-width: 380px) {
+  #toolbar { padding-left: 6px; padding-right: 6px; gap: 0; }
+  #toolbar > .tb { min-width: 34px; padding-left: 5px; padding-right: 5px; font-size: 13px; }
+  #toolbar > .tb-select { width: 72px; padding-left: 4px; padding-right: 4px; }
+}
 .tb-sep { width: 1px; height: 18px; background: var(--border); margin: 0 5px; }
 .tb-flex { flex: 1; }
 .tb-select {
@@ -710,6 +729,39 @@ body.resizing iframe, body.resizing .editor-content { pointer-events: none; }
 
   /* 尺寸拖拽角标只绑了 mousedown，触摸端拖不动，隐藏后靠工具条档位按钮调整 */
   .img-resize-handle { display: none !important; }
+}
+
+@media (max-width: 1100px) {
+  .editor-head {
+    display: grid; grid-template-columns: minmax(0, 1fr);
+    gap: 6px; padding: 12px 16px 10px;
+  }
+  .note-title-input { width: 100%; font-size: 21px; line-height: 1.4; }
+  .note-meta { overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+  .editor-actions { justify-content: flex-end; gap: 6px; min-width: 0; }
+  .editor-actions .btn { min-height: 40px; padding: 7px 10px; white-space: nowrap; }
+  #btnToggleToolbar { margin-right: auto; }
+  .toolbar {
+    flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
+    gap: 2px; padding: 4px 12px; scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+  .toolbar > * { flex-shrink: 0; }
+  .toolbar.disabled-toolbar { display: none; }
+  .editor-main:has(.disabled-toolbar) #btnToggleToolbar { display: none; }
+  .toolbar .tb { min-width: 40px; min-height: 40px; }
+  .toolbar .tb-select { min-height: 40px; font-size: 16px; }
+  .toolbar .tb-flex { display: none; }
+  .color-control { align-items: center; }
+  .editor-content { padding: 16px 18px 80px; }
+  .resizer { display: none; }
+  .editor-head-top { padding: 4px 12px; min-height: 36px; }
+}
+
+@media (max-width: 380px) {
+  .editor-head { padding-left: 12px; padding-right: 12px; }
+  .editor-actions { gap: 4px; }
+  .editor-actions .btn { padding-left: 7px; padding-right: 7px; font-size: 12px; }
 }
 
 /* ---------- 图片尺寸拖拽角标 ----------

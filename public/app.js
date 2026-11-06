@@ -1877,6 +1877,40 @@ $('#toolbar').addEventListener('click', (e) => {
   execFormat(btn.dataset.cmd);
 });
 
+function closeToolbarPanels() {
+  document.querySelectorAll('.toolbar-panel').forEach(panel => panel.classList.add('hidden'));
+  document.querySelectorAll('.toolbar-group-toggle').forEach(button => button.setAttribute('aria-expanded', 'false'));
+}
+
+document.querySelectorAll('.toolbar-group-toggle').forEach(button => {
+  button.addEventListener('click', () => {
+    const panel = document.getElementById(button.getAttribute('aria-controls'));
+    const opening = panel.classList.contains('hidden');
+    closeToolbarPanels();
+    if (!opening || !state.editMode) return;
+    const rect = $('#toolbar').getBoundingClientRect();
+    const width = Math.min(400, window.innerWidth - 24);
+    panel.style.width = width + 'px';
+    panel.style.left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12)) + 'px';
+    panel.style.top = (rect.bottom + 4) + 'px';
+    panel.style.maxHeight = Math.max(80, window.innerHeight - rect.bottom - 20) + 'px';
+    panel.classList.remove('hidden');
+    button.setAttribute('aria-expanded', 'true');
+  });
+});
+document.addEventListener('click', event => {
+  if (!event.target.closest('#toolbar')) closeToolbarPanels();
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') closeToolbarPanels();
+});
+window.addEventListener('resize', closeToolbarPanels);
+$('#btnToggleToolbar').addEventListener('click', closeToolbarPanels);
+$('#btnToggleEdit').addEventListener('click', closeToolbarPanels);
+$('#toolbar').addEventListener('click', event => {
+  if (event.target.closest('.toolbar-panel button') && !event.target.closest('.color-control')) closeToolbarPanels();
+});
+
 /* ---------- 段落类型 ----------
    这个下拉框是「状态」而不是「一次性动作」：它必须实时反映光标所在块的类型。
    早先用完就把 value 重置成 'p'，于是在标题里再选「正文」时值根本没变化，
