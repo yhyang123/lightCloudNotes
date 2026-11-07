@@ -37,6 +37,7 @@ function loadAll() {
   }
   if (!Array.isArray(db.folders)) db.folders = [];
   if (!Array.isArray(db.notes)) db.notes = [];
+  if (!Array.isArray(db.trash)) db.trash = [];
   migrateOrder();
   try {
     secret = fs.readFileSync(SECRET_FILE);
@@ -56,6 +57,35 @@ function saveDb() {
 const newId = (p) => p + '_' + crypto.randomBytes(9).toString('hex');
 const getFolder = (id) => db.folders.find((f) => f.id === id) || null;
 const getNote = (id) => db.notes.find((n) => n.id === id) || null;
+const TRASH_TTL = 30 * 24 * 60 * 60 * 1000;
+
+function archiveTrash(kind, root, folders, notes) {
+  const locks = [];
+  const pathNames = [];
+  let folder = getFolder(kind === 'folder' ? root.id : root.folderId);
+  while (folder) {
+    pathNames.unshift(folder.name);
+    if (folder.passwordHash) locks.push({ id: folder.id, passwordHash: folder.passwordHash, salt: folder.salt });
+    folder = getFolder(folder.parentId);
+  }
+  if (kind === 'note' && root.passwordHash) locks.push({ id: root.id, note: true, passwordHash: root.passwordHash, salt: root.salt });
+  if (kind === 'folder') pathNames.pop();
+  db.trash.push({ id: newId('trash'), kind, name: root.name || root.title || '无标题笔记',
+    deletedAt: Date.now(), originalLocation: pathNames.join(' / ') || '根目录',
+    locks, folders: JSON.parse(JSON.stringify(folders)), notes: JSON.parse(JSON.stringify(notes)) });
+}
+
+function trashAllowed(item, tokens) {
+  return item.locks.every(lock => tokens.includes(lock.note ? noteTokenFor(lock.id) : tokenFor(lock.id)));
+}
+
+function purgeExpiredTrash() {
+  const remaining = db.trash.filter(item => item.deletedAt + TRASH_TTL > Date.now());
+  if (remaining.length !== db.trash.length) {
+    db.trash = remaining;
+    saveDb();
+  }
+}
 
 /* ---------------- 排序字段 ----------------
    order：手动拖拽产生的自定义序号，同级内从 0 递增。
@@ -324,6 +354,38 @@ function serveFile(res, rootDir, relPath) {
 
 async function handleApi(req, res, pathname) {
   const method = req.method;
+  purgeExpiredTrash();
+  if (method === 'GET' && pathname === '/api/trash') {
+    const tokens = clientTokens(req);
+    return sendJSON(res, 200, { items: db.trash.map(item => {
+      const locked = !trashAllowed(item, tokens);
+      return { id: item.id, kind: item.kind, name: locked ? '受密码保护的项目' : item.name,
+        deletedAt: item.deletedAt, expiresAt: item.deletedAt + TRASH_TTL, locked,
+        originalLocation: locked ? '' : item.originalLocation };
+    }).sort((a, b) => b.deletedAt - a.deletedAt) });
+  }
+  const trashMatch = /^\/api\/trash\/([^/]+)\/(restore|unlock)$/.exec(pathname);
+  if (trashMatch && method === 'POST') {
+    const body = await readJSON(req);
+    purgeExpiredTrash();
+    const item = db.trash.find(entry => entry.id === trashMatch[1]);
+    if (!item) return sendJSON(res, 404, { error: '项目不存在或已过期清除' });
+    if (trashMatch[2] === 'unlock') {
+      const missing = item.locks.find(lock => !clientTokens(req).includes(lock.note ? noteTokenFor(lock.id) : tokenFor(lock.id)));
+      if (!missing) return sendJSON(res, 200, { ok: true });
+      if (!verifyPassword(missing, body.password || '')) return sendJSON(res, 403, { error: '密码不正确' });
+      return sendJSON(res, 200, { id: missing.id, token: missing.note ? noteTokenFor(missing.id) : tokenFor(missing.id) });
+    }
+    if (!trashAllowed(item, clientTokens(req))) return sendJSON(res, 403, { error: '请先解锁回收项目' });
+    const parentId = item.kind === 'folder' ? item.folders[0].parentId : item.notes[0].folderId;
+    if (parentId && !getFolder(parentId)) return sendJSON(res, 409, { error: '原文件夹已删除，请先恢复原文件夹；若已永久清除，则无法放回原位' });
+    if (parentId) requireUnlock(req, parentId);
+    db.folders.push(...item.folders);
+    db.notes.push(...item.notes);
+    db.trash = db.trash.filter(entry => entry.id !== item.id);
+    saveDb();
+    return sendJSON(res, 200, { ok: true });
+  }
 
   /* ---- 目录树 ---- */
   if (method === 'GET' && pathname === '/api/tree') {
@@ -399,6 +461,7 @@ async function handleApi(req, res, pathname) {
 
     if (method === 'PATCH') {
       const body = await readJSON(req);
+      if (getFolder(folder.id) !== folder) return sendJSON(res, 404, { error: '文件夹已移入回收站' });
       /* 置顶只是「排在哪」的展示偏好，既不泄露也不改动锁内任何内容，
          所以单改 pinned 时放行 —— 否则每次调整加密文件夹的位置都要先解锁一次，
          而解锁本身反而让内容暴露的时间更长。
@@ -443,6 +506,7 @@ async function handleApi(req, res, pathname) {
         db.folders.filter((f) => f.parentId === id).forEach((c) => collect(c.id));
       };
       collect(folder.id);
+      archiveTrash('folder', folder, db.folders.filter(f => doomed.includes(f.id)), db.notes.filter(n => doomed.includes(n.folderId)));
       db.notes = db.notes.filter((n) => !doomed.includes(n.folderId));
       db.folders = db.folders.filter((f) => !doomed.includes(f.id));
       saveDb();
@@ -684,6 +748,7 @@ async function handleApi(req, res, pathname) {
       if (note.passwordHash && !checkNoteUnlock(note, clientTokens(req))) {
         return sendJSON(res, 403, { error: '笔记已加密，请先输入密码解锁' });
       }
+      archiveTrash('note', note, [], [note]);
       db.notes = db.notes.filter((n) => n.id !== note.id);
       saveDb();
       return sendJSON(res, 200, { ok: true });
@@ -751,6 +816,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 loadAll();
+purgeExpiredTrash();
+setInterval(purgeExpiredTrash, 60 * 60 * 1000).unref();
 server.listen(PORT, HOST, () => {
   console.log(`[nasCloudNote] 服务已启动: http://${HOST}:${PORT}`);
   console.log(`[nasCloudNote] 数据目录: ${DATA_DIR}`);

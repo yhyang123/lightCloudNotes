@@ -2933,6 +2933,38 @@ function openModal(title, bodyHTML, onOk, okText) {
   if (firstInput) setTimeout(() => { firstInput.focus(); firstInput.select && firstInput.select(); }, 60);
 }
 let modalOnOk = null;
+async function showTrash() {
+  try {
+    const data = await api('/api/trash');
+    openModal('回收站', '<p>删除的项目保留 30 天，到期自动清除。文件夹恢复时包含其子文件夹及笔记。</p><div class="trash-list">' +
+      (data.items.length ? data.items.map(item => `<div class="trash-row"><div><strong>${item.kind === 'folder' ? '📁' : '📝'} ${esc(item.name)}</strong><small>${item.locked ? '需输入删除时的保护密码' : '原位置：' + esc(item.originalLocation)}<br>删除：${esc(new Date(item.deletedAt).toLocaleString())} · 剩余 ${Math.max(1, Math.ceil((item.expiresAt - Date.now()) / 86400000))} 天</small></div><button class="btn ghost sm" data-trash-id="${esc(item.id)}">${item.locked ? '解锁' : '放回原位'}</button></div>`).join('') : '<p class="empty-hint">回收站是空的</p>') + '</div>', closeModal, '关闭');
+    $('#modalBody').querySelectorAll('[data-trash-id]').forEach(button => {
+      const item = data.items.find(entry => entry.id === button.dataset.trashId);
+      button.addEventListener('click', async () => {
+        if (item.locked) {
+          openModal('解锁回收项目', '<p>请输入删除时的文件夹或笔记密码。多层密码保护需依次解锁。</p><input id="trashPassword" type="password" autocomplete="current-password">', async () => {
+            try {
+              const result = await api(`/api/trash/${item.id}/unlock`, { method: 'POST', body: { password: $('#trashPassword').value } });
+              if (result.token) addToken(result.id.startsWith('n_') ? 'note' : 'folder', result.id, result.token);
+              await showTrash();
+            } catch (e) { toast(e.message, 'error'); }
+          }, '解锁');
+          return;
+        }
+        button.disabled = true;
+        try {
+          await api(`/api/trash/${item.id}/restore`, { method: 'POST', body: {} });
+          Object.keys(noteCache).forEach(key => delete noteCache[key]);
+          await loadTree();
+          await loadFolderNotes(state.activeFolder);
+          toast('已放回原位', 'success');
+          await showTrash();
+        } catch (e) { toast(e.message, 'error'); button.disabled = false; }
+      });
+    });
+  } catch (e) { toast(e.message, 'error'); }
+}
+$('#btnTrash').addEventListener('click', showTrash);
 function closeModal() {
   $('#modalMask').classList.add('hidden');
   modalOnOk = null;
@@ -3029,12 +3061,14 @@ async function promptPassword(node) {
 async function promptDeleteFolder(node) {
   openModal('删除文件夹', `
     <p>确定删除文件夹 <b>${esc(node.name)}</b> 吗？</p>
-    <div class="modal-warn">⚠️ 其所有子文件夹及其中全部笔记将被永久删除，且无法恢复。</div>
+    <div class="modal-warn">其子文件夹和全部笔记将一起移入回收站，30 天内可放回原位，逾期自动清除。</div>
   `, async () => {
     try {
       /* 先在删除前快照子树（删除后树上就查不到子孙了），再清理本地残留状态 */
       const ids = folderSubtreeIds(node.id);
       const curOwner = state.currentNoteId ? noteFolderOf(state.currentNoteId) : null;
+      await ensureSaved();
+      if (state.dirty || state.titleDirty) throw new Error('保存未完成，请稍后再删除');
       await api(`/api/folders/${node.id}`, { method: 'DELETE' });
       /* 清理已删除子树的全部残留令牌、归属登记与缓存 */
       purgeFolderSubtree(node.id);
@@ -3044,7 +3078,7 @@ async function promptDeleteFolder(node) {
       await loadTree();
       await selectFolder(state.activeFolder);
       closeModal();
-      toast('文件夹已删除', 'success');
+      toast('文件夹已移入回收站', 'success');
     } catch (e) { toast(e.message, 'error'); }
   }, '删除');
 }
@@ -3225,13 +3259,14 @@ $('#btnNewNote').addEventListener('click', () => createNote(state.activeFolder))
 
 $('#btnDeleteNote').addEventListener('click', () => {
   if (!state.currentNoteId) return;
+  const delId = state.currentNoteId;
   openModal('删除笔记', `
     <p>确定删除笔记 <b>${esc(titleEl.value || '无标题笔记')}</b> 吗？</p>
-    <div class="modal-warn">⚠️ 删除后无法恢复。</div>
+    <div class="modal-warn">移入回收站后，30 天内可放回原位，逾期自动清除。</div>
   `, async () => {
     try {
       await saveNow();
-      const delId = state.currentNoteId;
+      if (state.currentNoteId !== delId || state.dirty || state.titleDirty) throw new Error('笔记已切换或保存未完成，请重新操作');
       await api(`/api/notes/${delId}`, { method: 'DELETE' });
       /* 笔记已不存在，撤销其令牌与归属登记，避免 id 复用或残留状态 */
       removeToken('note', delId);
@@ -3245,7 +3280,7 @@ $('#btnDeleteNote').addEventListener('click', () => {
       delete noteCache[state.activeFolder || '__root__'];
       await loadFolderNotes(state.activeFolder);
       closeModal();
-      toast('笔记已删除', 'success');
+      toast('笔记已移入回收站', 'success');
     } catch (e) { toast(e.message, 'error'); }
   }, '删除');
 });
