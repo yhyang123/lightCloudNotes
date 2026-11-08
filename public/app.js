@@ -1342,6 +1342,7 @@ async function promptRenameNote(n) {
 }
 
 function closeEditor() {
+  setHeaderCollapsed(false);
   state.currentNoteId = null;
   state.editMode = false;
   state.noteLocked = false;
@@ -1504,7 +1505,24 @@ async function openNote(id) {
 /* ---------- 只读 / 编辑模式（单按钮切换） ---------- */
 const btnToggleEdit = $('#btnToggleEdit');
 
+function setHeaderCollapsed(collapsed) {
+  $('#app').classList.toggle('header-collapsed', collapsed);
+  const button = $('#btnToggleHeader');
+  button.textContent = collapsed ? '⌄' : '⌃';
+  button.title = collapsed ? '展开顶部栏' : '收起顶部栏';
+  button.setAttribute('aria-label', button.title);
+  button.setAttribute('aria-expanded', String(!collapsed));
+  hideAllFloatBars();
+  closeToolbarPanels();
+}
+
+$('#btnToggleHeader').addEventListener('mousedown', event => event.preventDefault());
+$('#btnToggleHeader').addEventListener('click', () => {
+  setHeaderCollapsed(!$('#app').classList.contains('header-collapsed'));
+});
+
 function setEditMode(on) {
+  setHeaderCollapsed(on);
   state.editMode = on;
   editorEl.contentEditable = on && state.noteFormat !== 'markdown' ? 'true' : 'false';
   editorEl.classList.toggle('readonly', !on || state.noteFormat === 'markdown');
